@@ -6,14 +6,19 @@ template into your workspace and writes `project.config.js`; the UI renders
 NPV / BCR / IRR, charts, value waterfall, timeline, data tables, sensitivity,
 Excel exports — and lets you share a password-protected viewer.
 
+The hosted Share backend lives separately at
+[`TeleiosPtyLtd/business-case-server`](https://github.com/TeleiosPtyLtd/business-case-server),
+deployed at `models.teleios.au`. This template repo only contains the editor;
+running the editor doesn't need a server.
+
 ## Workflow
 
 ```
 1.  Talk to Claude Code about a decision you want to model.
 2.  The business-case skill clones this repo into ./<slug>/.
 3.  Claude writes  ./<slug>/project.config.js.
-4.  Open the page (locally) and explore.
-5.  Click "Share" → set a password → upload to your hosted backend.
+4.  Open  index.html  in a browser and explore.
+5.  Click "Share" → set a password → uploads to models.teleios.au.
 6.  Send the URL + password to a stakeholder.
 ```
 
@@ -24,10 +29,10 @@ own self-contained directory.
 ## Layout
 
 ```
-reschematic/
+business-case/
 ├── index.html               # Editor entry — loads project.config.js
 ├── project.config.js        # ← All project-specific data lives here. Edit this.
-├── share.config.js          # Configures where the Share button uploads to
+├── share.config.js          # Where the Share button uploads to (default: models.teleios.au)
 ├── src/
 │   ├── icons.jsx            # Icon set + Reschematic logo
 │   └── charts.jsx           # Static chart helpers
@@ -44,13 +49,6 @@ reschematic/
 │   └── app.jsx              # App entry — wires everything together
 ├── examples/
 │   └── minimal.config.js    # Smallest viable starter (1 cost + 1 benefit)
-├── server/
-│   ├── server.js            # Express backend: rate-limited, scrypt-hashed,
-│   │                        # share TTL, snapshot validation
-│   ├── view.html            # Read-only viewer page served at /view/:id
-│   ├── package.json
-│   └── data/                # Stored snapshots (one JSON per share, gitignored)
-├── Dockerfile               # Deployable as-is (Fly.io / Render / VPS)
 └── .gitignore
 ```
 
@@ -76,52 +74,32 @@ lives in `project.config.js`. The engine handles:
   Add Cost / Add Benefit / Remove are hidden; estimates remain editable for
   what-if exploration.
 
-## Running locally
+## Running the editor
+
+Open `index.html` directly in any browser — no build step, no server. JSX is
+transpiled in-browser via Babel-standalone (fine for prototypes; this isn't a
+production build).
+
+For a slightly nicer experience (and to avoid `file://` quirks), serve it
+with any static server:
 
 ```sh
-cd server
-npm install
-npm start         # http://localhost:8787
+python3 -m http.server 8000     # http://localhost:8000
+# or
+npx serve .
 ```
 
-That serves the editor at `/`, the share endpoint at `/api/share`, and the
-viewer at `/view/:id`. Share works end-to-end on `localhost`.
+## Sharing
 
-If you don't need Share you can also just open `index.html` directly — the
-editor works without the backend.
+The Share button POSTs the live model snapshot (assumptions, items, current
+overrides, scenario, includeSoft toggle) and a chosen password to the
+configured backend. By default that's `https://models.teleios.au/api/share`
+— set in `share.config.js`. Override per clone if you're running your own
+deployment of `business-case-server` somewhere else.
 
-## Sharing to a hosted backend
-
-1. **Deploy the backend.** Easiest paths:
-
-   ```sh
-   docker build -t reschematic .
-   docker run -p 8787:8787 -v $PWD/data:/app/server/data reschematic
-   ```
-
-   Or `flyctl launch` from this directory (the Dockerfile is picked up
-   automatically). Or push to Render and let it use the Dockerfile.
-
-2. **Point the editor at it.** Edit `share.config.js` in your local clone:
-
-   ```js
-   window.RESCHEMATIC_SHARE_ENDPOINT = "https://reschematic.example.com/api/share";
-   ```
-
-3. **Click Share.** The model snapshot uploads, the password is scrypt-hashed
-   server-side, and you get back a URL like
-   `https://reschematic.example.com/view/{id}` that prompts for the password.
-
-### Backend env vars
-
-| var              | default       | what it controls                          |
-|------------------|---------------|-------------------------------------------|
-| `PORT`           | `8787`        | HTTP port                                 |
-| `SHARE_TTL_DAYS` | `90`          | when shares are GC'd on next read         |
-| `MAX_BODY_BYTES` | `2097152`     | max upload size (2 MB)                    |
-
-Rate limits: 30 uploads / 100 password attempts per IP per window. Tweak in
-`server/server.js` if you need different ceilings.
+The backend salt-hashes the password (`scrypt`), stores the snapshot, and
+returns a URL of the form `https://models.teleios.au/view/{id}` that prompts
+for the password and renders the same UI in read-only-but-explorable mode.
 
 ## Schema reference
 
