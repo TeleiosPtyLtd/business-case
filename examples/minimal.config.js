@@ -1,4 +1,4 @@
-// Smallest viable Reschematic business case — 1 cost, 1 benefit, 1 scenario.
+// Smallest viable CBAgent business case — 1 cost, 1 benefit, 1 scenario.
 // Copy this over project.config.js as a starting point and grow from there.
 
 window.PROJECT_CONFIG = {

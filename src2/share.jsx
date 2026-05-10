@@ -1,11 +1,11 @@
 // Share modal — uploads the current model snapshot to a backend so it can be
 // viewed at a password-protected URL.
 //
-// The backend endpoint is read from window.RESCHEMATIC_SHARE_ENDPOINT, falling
+// The backend endpoint is read from window.CBAGENT_SHARE_ENDPOINT, falling
 // back to a relative `/api/share` (works when the page is served from the
 // same origin as the backend in `server/`).
 
-const SHARE_ENDPOINT = (typeof window !== "undefined" && window.RESCHEMATIC_SHARE_ENDPOINT)
+const SHARE_ENDPOINT = (typeof window !== "undefined" && window.CBAGENT_SHARE_ENDPOINT)
   || "/api/share";
 
 const ShareModal = ({ snapshot, onClose }) => {
@@ -116,7 +116,7 @@ const ShareModal = ({ snapshot, onClose }) => {
             fontSize: 11.5, color: "var(--muted-2)", lineHeight: 1.5,
           }}>
             Endpoint: <span style={{ fontFamily: "var(--mono)" }}>{SHARE_ENDPOINT}</span>.
-            Configure via <code style={{ fontFamily: "var(--mono)" }}>window.RESCHEMATIC_SHARE_ENDPOINT</code>.
+            Configure via <code style={{ fontFamily: "var(--mono)" }}>window.CBAGENT_SHARE_ENDPOINT</code>.
           </div>
         </div>
       )}

@@ -121,7 +121,7 @@ const buildSummaryRows = (model, irrValue, scenario, includeSoft, projectName, A
 
 const exportAll = ({ items, assumptions, model, A, irrValue, scenario, includeSoft, projectName }) => {
   const rows = [];
-  rows.push(["RESCHEMATIC EXPORT — " + projectName]);
+  rows.push(["CBAGENT EXPORT — " + projectName]);
   rows.push(["Generated", new Date().toISOString()]);
   rows.push([]);
 
@@ -140,7 +140,7 @@ const exportAll = ({ items, assumptions, model, A, irrValue, scenario, includeSo
   rows.push(["=== ASSUMPTIONS ==="]);
   rows.push(...buildAssumptionsRows(assumptions));
 
-  const safeName = (projectName || "reschematic").replace(/[^a-z0-9]+/gi, "_").toLowerCase();
+  const safeName = (projectName || "cbagent").replace(/[^a-z0-9]+/gi, "_").toLowerCase();
   downloadCSV(`${safeName}_export`, rows);
 };
 

@@ -1,4 +1,4 @@
-// Icon set — minimal stroked icons + the Reschematic mark
+// Icon set — minimal stroked icons + the CBAgent mark
 const Icon = ({ d, size = 16, stroke = 1.6, fill = "none", style }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor"
        strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" style={style}>
@@ -33,7 +33,7 @@ const IconClock    = (p) => <Icon {...p} d={<><circle cx="12" cy="12" r="9"/><pa
 const IconBookmark = (p) => <Icon {...p} d="M6 3h12v18l-6-4-6 4V3z" />;
 const IconDownload = (p) => <Icon {...p} d={<><path d="M12 4v12"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/></>} />;
 
-// Reschematic logo: four stacked colored bars (squareish) + wordmark
+// CBAgent logo: four stacked colored bars (squareish) + wordmark
 const Logo = ({ size = 22 }) => (
   <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
     <span style={{ display: "inline-flex", gap: 2 }} aria-hidden="true">
@@ -45,7 +45,7 @@ const Logo = ({ size = 22 }) => (
     <span style={{
       fontFamily: "var(--sans)", fontWeight: 600, fontSize: 16,
       letterSpacing: "-0.01em", color: "var(--ink)"
-    }}>Reschematic</span>
+    }}>CBAgent</span>
   </span>
 );
 

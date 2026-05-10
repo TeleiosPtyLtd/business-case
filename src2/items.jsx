@@ -333,7 +333,7 @@ const AddItemModal = ({ kind, onClose, onAdd, existingIds }) => {
   return (
     <Modal title={`Add ${kind === "cost" ? "a cost" : "a benefit"}`} onClose={onClose} width={580}>
       <div style={{ color: "var(--muted)", fontSize: 13, marginBottom: 18 }}>
-        Pick a template — Reschematic will wire it into the model with your existing assumptions.
+        Pick a template — CBAgent will wire it into the model with your existing assumptions.
         Adjust the assumptions in the right rail to refine.
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>

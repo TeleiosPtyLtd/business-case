@@ -1,4 +1,4 @@
-# Reschematic — Interactive Business Case template
+# CBAgent — Interactive Business Case template
 
 Public template for generating interactive financial business cases through a
 conversation with Claude Code. You describe a project; Claude clones this
@@ -34,7 +34,7 @@ business-case/
 ├── project.config.js        # ← All project-specific data lives here. Edit this.
 ├── share.config.js          # Where the Share button uploads to (default: models.teleios.au)
 ├── src/
-│   ├── icons.jsx            # Icon set + Reschematic logo
+│   ├── icons.jsx            # Icon set + CBAgent logo
 │   └── charts.jsx           # Static chart helpers
 ├── src2/
 │   ├── model.jsx            # Engine: sandboxed formula compiler, validator,
