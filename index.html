@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>Reschematic — Interactive Business Case</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  :root, [data-theme="light"] {
+    --bg: #FBFAF6;
+    --bg-soft: #F5F3EC;
+    --surface: #FFFFFF;
+    --surface-2: #FAF8F2;
+    --line: #ECE8DC;
+    --line-2: #E3DECE;
+    --line-strong: #D6CFB9;
+
+    --ink: #14130F;
+    --ink-2: #2C2A24;
+    --muted: #6B6657;
+    --muted-2: #948E7A;
+    --eyebrow: #A8A18B;
+
+    --green: #11A862;
+    --green-soft: #E6F6EE;
+    --green-deep: #0B7A47;
+    --red-deep: #B73A4D;
+
+    --c-red: #F26B7A;
+    --c-blue: #5BA8E5;
+    --c-yellow: #F1C24A;
+    --c-mintlight: #B9E8D2;
+    --c-mint: #5BCB97;
+    --c-green: #2BAE6E;
+    --c-orange: #E89556;
+    --c-purple: #9F7AD9;
+
+    --grid-line: #ECE8DC;
+    --grid-line-strong: #D6CFB9;
+    --tex-dot: rgba(20,19,15,0.025);
+  }
+
+  [data-theme="dark"] {
+    --bg: #15140F;
+    --bg-soft: #1D1C16;
+    --surface: #201F18;
+    --surface-2: #26251D;
+    --line: #2F2D23;
+    --line-2: #3A382B;
+    --line-strong: #4A4738;
+
+    --ink: #F4EFDF;
+    --ink-2: #D9D3BE;
+    --muted: #948E78;
+    --muted-2: #6F6A57;
+    --eyebrow: #6F6A57;
+
+    --green: #2FCB7C;
+    --green-soft: rgba(47,203,124,0.14);
+    --green-deep: #6CE6A0;
+    --red-deep: #FF8B98;
+
+    --c-red: #F26B7A;
+    --c-blue: #6FB6EF;
+    --c-yellow: #F1C24A;
+    --c-mintlight: rgba(185,232,210,0.55);
+    --c-mint: #5BCB97;
+    --c-green: #2BAE6E;
+    --c-orange: #E89556;
+    --c-purple: #B79AE9;
+
+    --grid-line: #2A281F;
+    --grid-line-strong: #3D3A2E;
+    --tex-dot: rgba(244,239,223,0.025);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: var(--sans, "Geist", ui-sans-serif, sans-serif);
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 14px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    transition: background 240ms ease, color 240ms ease;
+  }
+  :root {
+    --serif: "Newsreader", ui-serif, Georgia, serif;
+    --sans: "Geist", ui-sans-serif, sans-serif;
+    --mono: "Geist Mono", ui-monospace, monospace;
+  }
+
+  button { font: inherit; color: inherit; cursor: pointer; }
+  input, textarea, select { font: inherit; color: inherit; }
+  a { color: inherit; }
+
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background-image: radial-gradient(var(--tex-dot) 1px, transparent 1px);
+    background-size: 3px 3px;
+    pointer-events: none;
+    z-index: 0;
+  }
+  #root { position: relative; z-index: 1; }
+
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none; margin: 0;
+  }
+  input[type="number"] { -moz-appearance: textfield; }
+
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(20,19,15,0.45);
+    z-index: 100; display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  [data-theme="dark"] .modal-backdrop { background: rgba(0,0,0,0.6); }
+
+  .panel-fade { animation: fadeIn 220ms ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body data-theme="light">
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+
+<script src="share.config.js"></script>
+<script type="text/babel" src="src/icons.jsx"></script>
+<script type="text/babel" src="src/charts.jsx"></script>
+<script src="project.config.js"></script>
+<script type="text/babel" src="src2/model.jsx"></script>
+<script type="text/babel" src="src2/charts2.jsx"></script>
+<script type="text/babel" src="src2/export.jsx"></script>
+<script type="text/babel" src="src2/ui.jsx"></script>
+<script type="text/babel" src="src2/estimates.jsx"></script>
+<script type="text/babel" src="src2/items.jsx"></script>
+<script type="text/babel" src="src2/tabs.jsx"></script>
+<script type="text/babel" src="src2/share.jsx"></script>
+<script type="text/babel" src="src2/app.jsx"></script>
+</body>
+</html>

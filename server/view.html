@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>Reschematic — Shared Business Case</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  :root, [data-theme="light"] {
+    --bg: #FBFAF6; --bg-soft: #F5F3EC; --surface: #FFFFFF; --surface-2: #FAF8F2;
+    --line: #ECE8DC; --line-2: #E3DECE; --line-strong: #D6CFB9;
+    --ink: #14130F; --ink-2: #2C2A24; --muted: #6B6657; --muted-2: #948E7A; --eyebrow: #A8A18B;
+    --green: #11A862; --green-soft: #E6F6EE; --green-deep: #0B7A47; --red-deep: #B73A4D;
+    --c-red: #F26B7A; --c-blue: #5BA8E5; --c-yellow: #F1C24A; --c-mintlight: #B9E8D2;
+    --c-mint: #5BCB97; --c-green: #2BAE6E; --c-orange: #E89556; --c-purple: #9F7AD9;
+    --grid-line: #ECE8DC; --grid-line-strong: #D6CFB9; --tex-dot: rgba(20,19,15,0.025);
+  }
+  [data-theme="dark"] {
+    --bg: #15140F; --bg-soft: #1D1C16; --surface: #201F18; --surface-2: #26251D;
+    --line: #2F2D23; --line-2: #3A382B; --line-strong: #4A4738;
+    --ink: #F4EFDF; --ink-2: #D9D3BE; --muted: #948E78; --muted-2: #6F6A57; --eyebrow: #6F6A57;
+    --green: #2FCB7C; --green-soft: rgba(47,203,124,0.14); --green-deep: #6CE6A0; --red-deep: #FF8B98;
+    --c-red: #F26B7A; --c-blue: #6FB6EF; --c-yellow: #F1C24A; --c-mintlight: rgba(185,232,210,0.55);
+    --c-mint: #5BCB97; --c-green: #2BAE6E; --c-orange: #E89556; --c-purple: #B79AE9;
+    --grid-line: #2A281F; --grid-line-strong: #3D3A2E; --tex-dot: rgba(244,239,223,0.025);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Geist", ui-sans-serif, sans-serif;
+    background: var(--bg); color: var(--ink); font-size: 14px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  :root {
+    --serif: "Newsreader", ui-serif, Georgia, serif;
+    --sans: "Geist", ui-sans-serif, sans-serif;
+    --mono: "Geist Mono", ui-monospace, monospace;
+  }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  input, textarea, select { font: inherit; color: inherit; }
+  body::before {
+    content: ""; position: fixed; inset: 0;
+    background-image: radial-gradient(var(--tex-dot) 1px, transparent 1px);
+    background-size: 3px 3px; pointer-events: none; z-index: 0;
+  }
+  #root, #gate { position: relative; z-index: 1; }
+
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(20,19,15,0.45);
+    z-index: 100; display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .panel-fade { animation: fadeIn 220ms ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+
+  .gate-wrap {
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  }
+  .gate-card {
+    width: 380px; max-width: calc(100% - 48px);
+    background: var(--surface); border: 1px solid var(--line); border-radius: 20px;
+    padding: 28px; box-shadow: 0 1px 0 rgba(20,19,15,0.04), 0 12px 32px rgba(0,0,0,0.06);
+  }
+  .gate-eyebrow {
+    font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--eyebrow); font-weight: 500;
+  }
+  .gate-title {
+    font-family: var(--serif); font-weight: 500; font-size: 24px;
+    letter-spacing: -0.015em; line-height: 1.2; margin: 8px 0 6px;
+  }
+  .gate-desc { color: var(--muted); font-size: 13px; margin: 0 0 18px; line-height: 1.5; }
+  .gate-input {
+    width: 100%; border: 1px solid var(--line-strong); border-radius: 10px;
+    background: var(--surface-2); padding: 10px 12px;
+    font-family: var(--mono); font-size: 13px; color: var(--ink); outline: none;
+  }
+  .gate-button {
+    margin-top: 14px; width: 100%; border: 1px solid var(--ink); background: var(--ink);
+    color: var(--bg); padding: 10px 16px; border-radius: 999px; font-size: 13px; font-weight: 500;
+  }
+  .gate-error {
+    margin-top: 12px; padding: 10px 12px; border-radius: 8px;
+    background: color-mix(in srgb, var(--red-deep) 12%, transparent);
+    color: var(--red-deep); font-size: 12.5px;
+  }
+</style>
+</head>
+<body data-theme="light">
+<div id="gate">
+  <div class="gate-wrap">
+    <form class="gate-card" onsubmit="return window.__unlock(event)">
+      <div class="gate-eyebrow">Reschematic</div>
+      <div class="gate-title">Shared business case</div>
+      <p class="gate-desc">Enter the password to view this model.</p>
+      <input id="pw" class="gate-input" type="password" autofocus placeholder="Password" />
+      <button class="gate-button" type="submit">Unlock</button>
+      <div id="err" class="gate-error" style="display:none"></div>
+    </form>
+  </div>
+</div>
+<div id="root"></div>
+
+<script>
+window.__unlock = async function (ev) {
+  ev.preventDefault();
+  const pw = document.getElementById("pw").value;
+  const err = document.getElementById("err");
+  err.style.display = "none";
+  const id = location.pathname.split("/").filter(Boolean).pop();
+  try {
+    const res = await fetch(`/api/model/${id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: pw }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      err.textContent = res.status === 401 ? "Wrong password" : (text || "Unable to load model");
+      err.style.display = "";
+      return false;
+    }
+    const data = await res.json();
+    // Hand the snapshot to the app: PROJECT_CONFIG mirrors what project.config.js
+    // would have set, but assembled from the uploaded snapshot.
+    const snap = data.snapshot;
+    window.PROJECT_CONFIG = {
+      meta:               snap.meta,
+      horizon:            snap.horizon,
+      defaultScenario:    snap.defaultScenario,
+      scenarios:          rebuildScenarios(snap),
+      categoryColors:     snap.categoryColors || {},
+      assumptions:        snap.assumptions || [],
+      items:              snap.items || [],
+      __snapshotMode:     true,
+      __readOnly:         true,
+      __overrides:        snap.overrides || {},
+      __includeSoft:      !!snap.includeSoft,
+    };
+    document.getElementById("gate").style.display = "none";
+    loadApp();
+  } catch (e) {
+    err.textContent = e.message || "Network error";
+    err.style.display = "";
+  }
+  return false;
+};
+
+function rebuildScenarios(snap) {
+  const out = {};
+  const labels = snap.scenarios || {};
+  const overrides = snap.scenarioOverrides || {};
+  const shifts = snap.scenarioCounterfactualShift || {};
+  for (const id of Object.keys(labels)) {
+    out[id] = {
+      label: labels[id].label,
+      desc:  labels[id].desc,
+      overrides: overrides[id] || {},
+      counterfactualShift: shifts[id] || 0,
+    };
+  }
+  return out;
+}
+
+function loadScript(src, type) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    if (type) s.type = type;
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("Failed to load " + src));
+    document.body.appendChild(s);
+  });
+}
+
+async function loadApp() {
+  await loadScript("https://unpkg.com/react@18.3.1/umd/react.development.js");
+  await loadScript("https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js");
+  await loadScript("https://unpkg.com/@babel/standalone@7.29.0/babel.min.js");
+  // Append every JSX script tag in order; Babel will pick them up via
+  // transformScriptTags and execute them in document order.
+  const sources = [
+    "/src/icons.jsx",
+    "/src/charts.jsx",
+    "/src2/model.jsx",
+    "/src2/charts2.jsx",
+    "/src2/export.jsx",
+    "/src2/ui.jsx",
+    "/src2/estimates.jsx",
+    "/src2/items.jsx",
+    "/src2/tabs.jsx",
+    "/src2/share.jsx",
+    "/src2/app.jsx",
+  ];
+  for (const src of sources) {
+    const s = document.createElement("script");
+    s.type = "text/babel";
+    s.setAttribute("data-presets", "react");
+    s.src = src;
+    document.body.appendChild(s);
+  }
+  if (window.Babel && window.Babel.transformScriptTags) {
+    window.Babel.transformScriptTags();
+  }
+}
+</script>
+</body>
+</html>
