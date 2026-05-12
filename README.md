@@ -93,17 +93,6 @@ python3 -m http.server 8000     # then open http://localhost:8000
 npx serve .
 ```
 
-## Self-hosting the Share backend
-
-By default, **Share** uploads to the Teleios-hosted backend at
-`models.teleios.au`. If you'd rather run your own, deploy
-[`business-case-server`](https://github.com/TeleiosPtyLtd/business-case-server)
-and point `share.config.js` at it:
-
-```js
-window.CBAGENT_SHARE_ENDPOINT = "https://your-host.example.com/api/share";
-```
-
 ## What this tool deliberately doesn't do
 
 CBAgent is for *making a decision*, not for *closing the books*. It
