@@ -69,7 +69,7 @@ input — costs and benefits recalculate as you nudge values. You can:
 business-case/
 ├── index.html               Open this in a browser. That's the app.
 ├── project.config.js        Your project's numbers live here. Claude writes it.
-├── share.config.js          Where the Share button uploads to (default: models.teleios.au)
+├── share.config.js          Share endpoint configuration
 ├── src/                     Icons + simple chart helpers
 ├── src2/                    The actual app — model engine, UI, sharing, export
 └── examples/
@@ -78,37 +78,6 @@ business-case/
 
 The only file you (or Claude) ever edits is `project.config.js`.
 Everything else is the rendering engine and the UI.
-
-## Running it without Claude Code
-
-You don't have to use Claude to use the template. You can hand-edit
-`project.config.js` (copy from `examples/minimal.config.js` to get
-started), then open `index.html` in any browser. No build step, no Node,
-no server. If your browser is fussy about loading local files, run a
-tiny static server in the folder:
-
-```sh
-python3 -m http.server 8000     # then open http://localhost:8000
-# or
-npx serve .
-```
-
-## What this tool deliberately doesn't do
-
-CBAgent is for *making a decision*, not for *closing the books*. It
-doesn't model:
-
-- Tax effects (deductions, GST, etc.)
-- Depreciation and amortisation schedules
-- Inflation adjustments (real vs nominal dollars)
-- Working capital changes
-- The capex/opex distinction
-- Monte Carlo / probabilistic simulations
-
-If your CFO needs any of those, take the numbers from this tool and hand
-them off to a proper Excel model for the final pass. CBAgent is for the
-conversation *before* that — figuring out whether the project is worth
-modelling in detail at all.
 
 ## About Teleios
 
