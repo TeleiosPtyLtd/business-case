@@ -90,8 +90,9 @@ const App = () => {
   const [selectedItemId, setSelectedItemId] = React.useState(() => __persisted?.selectedItemId || null);
   const [sortBySensitivity, setSortBySensitivity] = React.useState(() => !!__persisted?.sortBySensitivity);
   const [saveState, setSaveState] = React.useState("idle"); // idle | saving | saved
-  const [resetArmed, setResetArmed] = React.useState(false);
   const [estimatesOpen, setEstimatesOpen] = React.useState(false); // mobile collapsible
+  const [resetOpen, setResetOpen] = React.useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = React.useState(false);
   // On mobile we present the model as view-only, regardless of READ_ONLY.
   const viewOnly = READ_ONLY || isMobile;
 
@@ -229,23 +230,30 @@ const App = () => {
     return () => clearTimeout(h);
   }, [saveState]);
 
-  // Two-click reset: first click arms (with a 3s decay), second click commits.
-  React.useEffect(() => {
-    if (!resetArmed) return;
-    const h = setTimeout(() => setResetArmed(false), 3000);
-    return () => clearTimeout(h);
-  }, [resetArmed]);
-  const onResetClick = () => {
-    if (!resetArmed) { setResetArmed(true); return; }
+  // Reset opens a modal first; only the confirm button actually wipes state.
+  const onResetConfirm = () => {
     try { localStorage.removeItem(STATE_KEY); } catch {}
     window.location.reload();
   };
+
+  // Click-outside handler for the Export dropdown menu.
+  const exportMenuRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!exportMenuOpen) return;
+    const onDoc = (e) => {
+      if (exportMenuRef.current && exportMenuRef.current.contains(e.target)) return;
+      setExportMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [exportMenuOpen]);
 
   const project = { name: PROJECT_META.shortName };
   const sLabel = SCENARIO_LABELS[scenario];
 
   return (
-    <div style={{ minHeight: "100vh" }}>
+    <>
+    <div className="no-print" style={{ minHeight: "100vh" }}>
       <header style={{
         borderBottom: "1px solid var(--line)",
         background: "color-mix(in srgb, var(--bg) 85%, transparent)",
@@ -261,23 +269,50 @@ const App = () => {
             <SaveIndicator state={saveState} />
             <ThemeToggle theme={theme} setTheme={setTheme} />
             {!isMobile && (
-              <button onClick={onResetClick}
-                title={resetArmed ? "Click again to confirm" : "Discard local edits and restore defaults"}
+              <button onClick={() => setResetOpen(true)}
+                title="Discard local edits and restore defaults"
                 style={{
-                  border: `1px solid ${resetArmed ? "var(--red-deep)" : "var(--line)"}`,
-                  background: resetArmed ? "color-mix(in srgb, var(--red-deep) 12%, var(--surface))" : "var(--surface)",
-                  color: resetArmed ? "var(--red-deep)" : "var(--muted)",
-                  padding: "7px 12px", borderRadius: 999,
-                  fontSize: 12, cursor: "pointer", fontWeight: resetArmed ? 600 : 400,
-                }}>{resetArmed ? "Confirm reset" : "Reset"}</button>
+                  border: "1px solid var(--line)", background: "var(--surface)",
+                  color: "var(--muted)", padding: "7px 12px", borderRadius: 999,
+                  fontSize: 12, cursor: "pointer",
+                }}>Reset</button>
             )}
             {!isMobile && (
-              <Pill2 onClick={() => exportAll({
-                items: adjustedItems, assumptions: assumptionsEff, model, A: A_eff, irrValue,
-                scenario: sLabel.label, includeSoft, projectName: PROJECT_META.shortName,
-              })}>
-                <IconDownload size={13} /> Export
-              </Pill2>
+              <div ref={exportMenuRef} style={{ position: "relative" }}>
+                <Pill2 onClick={() => setExportMenuOpen(o => !o)}>
+                  <IconDownload size={13} /> Export
+                  <IconChevDown size={12} style={{ marginLeft: 2 }} />
+                </Pill2>
+                {exportMenuOpen && (
+                  <div style={{
+                    position: "absolute", top: "calc(100% + 6px)", right: 0,
+                    minWidth: 200,
+                    background: "var(--surface)", border: "1px solid var(--line)",
+                    borderRadius: 12, boxShadow: "0 12px 32px rgba(0,0,0,0.10)",
+                    overflow: "hidden", zIndex: 30,
+                  }}>
+                    <ExportMenuItem
+                      title="CSV (Excel)"
+                      sub="Cash flows, waterfall, assumptions"
+                      onClick={() => {
+                        exportAll({
+                          items: adjustedItems, assumptions: assumptionsEff, model, A: A_eff, irrValue,
+                          scenario: sLabel.label, includeSoft, projectName: PROJECT_META.shortName,
+                        });
+                        setExportMenuOpen(false);
+                      }}
+                    />
+                    <ExportMenuItem
+                      title="PDF"
+                      sub="Executive proposal · print dialog"
+                      onClick={() => {
+                        setExportMenuOpen(false);
+                        printPDF(PROJECT_META.shortName || PROJECT_META.name);
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
             )}
             {!viewOnly && <Pill2 onClick={() => setShareOpen(true)}>Share</Pill2>}
             {(READ_ONLY || isMobile) && (
@@ -509,9 +544,81 @@ const App = () => {
           onClose={() => setShareOpen(false)}
         />
       )}
+
+      {resetOpen && (
+        <Modal title="Reset everything on this device?" onClose={() => setResetOpen(false)} width={520}>
+          <div style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6 }}>
+            This will discard every change you've made locally and reload the page with the
+            original <code style={{ fontFamily: "var(--mono)" }}>project.config.js</code> defaults. Resetting clears:
+          </div>
+          <ul style={{ margin: "12px 0 0", paddingLeft: 22, fontSize: 12.5, lineHeight: 1.7, color: "var(--ink-2)" }}>
+            <li>Estimate overrides — your what-if slider edits</li>
+            <li>Estimate edits and any new estimates you created via the wizard</li>
+            <li>Items you added, edited, or removed</li>
+            <li>Selected scenario, soft-value toggle, theme, sort preference, selected item</li>
+            <li>
+              <strong>Your owner token for sharing</strong>
+              {share && (
+                <span style={{ color: "var(--muted)" }}>
+                  {" "}— after reset you won't be able to update <span style={{ fontFamily: "var(--mono)" }}>{share.url}</span> any more.
+                  The existing shared snapshot stays live; you just won't own it from this device.
+                </span>
+              )}
+            </li>
+          </ul>
+          <div style={{
+            marginTop: 16, padding: "10px 12px", borderRadius: 8,
+            background: "color-mix(in srgb, var(--red-deep) 10%, transparent)",
+            color: "var(--red-deep)", fontSize: 12.5, lineHeight: 1.5,
+          }}>
+            This action cannot be undone.
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+            <button onClick={() => setResetOpen(false)} style={{
+              border: "1px solid var(--line-strong)", background: "var(--surface)",
+              padding: "9px 16px", borderRadius: 999, fontSize: 13, cursor: "pointer",
+            }}>Cancel</button>
+            <button onClick={onResetConfirm} style={{
+              border: "1px solid var(--red-deep)", background: "var(--red-deep)",
+              color: "white", padding: "9px 16px", borderRadius: 999, fontSize: 13,
+              fontWeight: 500, cursor: "pointer",
+            }}>Reset everything</button>
+          </div>
+        </Modal>
+      )}
     </div>
+    <PrintReport
+      project={{
+        name: PROJECT_META.name || PROJECT_META.shortName || "Business Case",
+        shortName: PROJECT_META.shortName,
+        description: PROJECT_META.description,
+      }}
+      scenario={scenario}
+      scenarioLabel={sLabel.label}
+      scenarioDesc={sLabel.desc}
+      model={model}
+      items={adjustedItems}
+      assumptions={assumptionsEff}
+      A={A_eff}
+      irrValue={irrValue}
+      includeSoft={includeSoft}
+      horizon={HORIZON}
+    />
+    </>
   );
 };
+
+// Item in the Export dropdown menu.
+const ExportMenuItem = ({ title, sub, onClick }) => (
+  <button onClick={onClick} style={{
+    display: "block", width: "100%", textAlign: "left",
+    border: "none", borderBottom: "1px solid var(--line)",
+    background: "transparent", padding: "10px 14px", cursor: "pointer",
+  }}>
+    <div style={{ fontSize: 13, fontWeight: 500, color: "var(--ink)" }}>{title}</div>
+    <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 2 }}>{sub}</div>
+  </button>
+);
 
 const SaveIndicator = ({ state }) => {
   if (state === "idle") return null;

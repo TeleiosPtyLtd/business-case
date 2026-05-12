@@ -135,6 +135,27 @@
       border-radius: 16px 16px 0 0 !important; max-height: 92vh !important;
     }
   }
+
+  /* Print — only the PrintReport (.print-only) is visible; the main app
+     and any modals are hidden. Background/texture stripped. The PrintReport
+     uses explicit hex colours so it's safe even if the user is in dark mode.
+     @page sets A4 with a generous executive margin. */
+  .print-only { display: none; }
+  @media print {
+    @page { size: A4; margin: 16mm; }
+    html, body {
+      background: #FFFFFF !important; color: #14130F !important;
+      font-size: 10.5pt; line-height: 1.5;
+    }
+    body::before { display: none !important; }
+    .no-print, .modal-backdrop { display: none !important; }
+    .print-only { display: block !important; }
+    .print-page { page-break-after: always; break-after: page; }
+    .print-page:last-child { page-break-after: auto; break-after: auto; }
+    .print-avoid-break { page-break-inside: avoid; break-inside: avoid; }
+    /* Make every link print as plain text — no underlines, no URL appended */
+    a { color: inherit !important; text-decoration: none !important; }
+  }
 </style>
 </head>
 <body data-theme="light">
