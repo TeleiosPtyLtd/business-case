@@ -33,11 +33,14 @@ const IconClock    = (p) => <Icon {...p} d={<><circle cx="12" cy="12" r="9"/><pa
 const IconBookmark = (p) => <Icon {...p} d="M6 3h12v18l-6-4-6 4V3z" />;
 const IconDownload = (p) => <Icon {...p} d={<><path d="M12 4v12"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/></>} />;
 
-// Teleios mark — the T-in-circle from teleios.au. Uses `currentColor` so it
-// adapts to light / dark themes via the wrapper's text colour.
-const Logo = ({ size = 22 }) => (
+// Teleios mark — verbatim path from teleios.au (the inline SVG used in the
+// site's nav). The outer shape extends past a normal circle on the right
+// edge (subtle swoosh + indent — the distinctive feature), so it needs to
+// be rendered large enough for that detail to be visible. Uses
+// `currentColor` so the mark adapts to light / dark themes via the wrapper.
+const Logo = ({ size = 28 }) => (
   <span style={{ display: "inline-flex", alignItems: "center", gap: 10, color: "var(--ink)" }}>
-    <svg width={size * 1.18} height={size * 1.18} viewBox="0 0 500 500" fill="none"
+    <svg width={size} height={size} viewBox="0 0 500 500" fill="none"
          xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style={{ display: "block" }}>
       <path fillRule="evenodd" clipRule="evenodd"
             d="M250 90.4999C166.881 90.4999 99.5 157.881 99.5 241C99.5 324.119 166.881 391.5 250 391.5C333.119 391.5 400.5 324.119 400.5 241C400.5 157.881 333.119 90.4999 250 90.4999ZM84.5 241C84.5 149.597 158.597 75.4999 250 75.4999C297.369 75.4999 351.533 88.3274 400.5 165C438.5 224.5 433.029 231.5 432.5 233C431.971 234.5 431.5 237 423 241C419.5 242.647 414 242.5 413.5 242.5C248 242.5 341.403 406.5 250 406.5C158.597 406.5 84.5 332.403 84.5 241Z"
@@ -46,7 +49,7 @@ const Logo = ({ size = 22 }) => (
             fill="currentColor"/>
     </svg>
     <span style={{
-      fontFamily: "var(--sans)", fontWeight: 600, fontSize: 16,
+      fontFamily: "var(--sans)", fontWeight: 600, fontSize: 17,
       letterSpacing: "-0.01em", color: "var(--ink)"
     }}>Teleios</span>
   </span>

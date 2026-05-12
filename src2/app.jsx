@@ -269,7 +269,7 @@ const App = () => {
           display: "flex", alignItems: "center", justifyContent: "space-between",
           padding: isMobile ? "10px 14px" : "14px 28px", gap: 8,
         }}>
-          <Logo size={isMobile ? 18 : 20} />
+          <Logo size={isMobile ? 22 : 28} />
           <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10 }}>
             <SaveIndicator state={saveState} />
             <ThemeToggle theme={theme} setTheme={setTheme} />
