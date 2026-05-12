@@ -5,7 +5,7 @@ const IconMap = {
   IconBuilding, IconClock, IconShield,
 };
 
-const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, selectedItemLabel, selectedItemColor, onClearSelection, onEditAssumption, readOnly }) => {
+const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, selectedItemLabel, selectedItemColor, onClearSelection, onEditAssumption, readOnly, sortBySensitivity, onToggleSort }) => {
   const [expanded, setExpanded] = React.useState(null);
   const [query, setQuery] = React.useState("");
   const scrollRef = React.useRef(null);
@@ -16,6 +16,18 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
   );
   const hasHighlight = highlightSet.size > 0;
 
+  // |∂NPV/∂x| ranking — compute the swing in NPV across each assumption's
+  // sensitivity range, then sort by magnitude. Only computed when the
+  // toggle is on; one computeSensitivity call covers all assumptions in
+  // O(n·computeModel) so it's cheap for typical models.
+  const sensitivityRanges = React.useMemo(() => {
+    if (!sortBySensitivity) return null;
+    const A = {};
+    for (const a of assumptions) A[a.id] = a.value;
+    const sens = computeSensitivity(items, A, assumptions, 0.25);
+    return new Map(sens.map(s => [s.id, s.range]));
+  }, [sortBySensitivity, items, assumptions]);
+
   // Filter by case-insensitive match on id, label, group, description
   const q = query.trim().toLowerCase();
   const matches = (a) => !q
@@ -25,13 +37,22 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
     || (a.description || "").toLowerCase().includes(q);
 
   const visible = assumptions.filter(matches);
-  // Highlighted cards in their original ordering, then the rest grouped as before
+  // Highlighted cards in their original ordering, then the rest:
+  //   - grouped (default), OR
+  //   - flat-sorted by |∂NPV/∂x| when the toggle is on
   const highlighted = visible.filter(a => highlightSet.has(a.id));
+  const nonHighlighted = visible.filter(a => !highlightSet.has(a.id));
+  const sortedFlat = sortBySensitivity && sensitivityRanges
+    ? [...nonHighlighted].sort((a, b) =>
+        (sensitivityRanges.get(b.id) || 0) - (sensitivityRanges.get(a.id) || 0))
+    : null;
   const groups = {};
-  for (const a of visible) {
-    if (highlightSet.has(a.id)) continue; // pin to top instead
-    (groups[a.group] = groups[a.group] || []).push(a);
+  if (!sortBySensitivity) {
+    for (const a of nonHighlighted) {
+      (groups[a.group] = groups[a.group] || []).push(a);
+    }
   }
+  const rangeFor = (id) => sensitivityRanges ? sensitivityRanges.get(id) : null;
 
   // Snap rail back to the top whenever the selection changes so the pinned
   // section is in view.
@@ -52,9 +73,26 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
             marginLeft: "auto", fontSize: 11,
             color: "var(--muted-2)", fontFamily: "var(--mono)",
           }}>{assumptions.length} variables</span>
+          {onToggleSort && (
+            <button onClick={onToggleSort}
+              title={sortBySensitivity
+                ? "Currently sorted by |∂NPV/∂x| — click to restore groups"
+                : "Sort by sensitivity: |∂NPV/∂x|"}
+              style={{
+                border: `1px solid ${sortBySensitivity ? "var(--ink)" : "var(--line)"}`,
+                background: sortBySensitivity ? "var(--ink)" : "var(--surface-2)",
+                color: sortBySensitivity ? "var(--bg)" : "var(--muted)",
+                padding: "3px 9px", borderRadius: 999,
+                fontSize: 10.5, fontFamily: "var(--mono)",
+                cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4,
+                whiteSpace: "nowrap",
+              }}>↕ impact</button>
+          )}
         </div>
         <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--muted)" }}>
-          Editable inputs that drive every cost and benefit. Click a row for context.
+          {sortBySensitivity
+            ? "Sorted by NPV swing. Largest |Δ NPV| first."
+            : "Editable inputs that drive every cost and benefit. Click a row for context."}
         </div>
         <input type="text" value={query} onChange={e => setQuery(e.target.value)}
           placeholder="Search estimates…"
@@ -98,21 +136,24 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
                   onEdit={onEditAssumption ? () => onEditAssumption(a) : null}
                   accentColor={selectedItemColor}
                   readOnly={readOnly}
+                  range={rangeFor(a.id)}
                 />
               ))}
             </div>
           </div>
         )}
 
-        {Object.entries(groups).map(([gname, gitems]) => (
-          <div key={gname} style={{ marginBottom: 6 }}>
-            <div style={{
-              padding: "6px 4px 8px",
-              fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase",
-              color: "var(--eyebrow)", fontWeight: 500,
-            }}>{gname}</div>
+        {sortBySensitivity ? (
+          <div style={{ marginBottom: 6 }}>
+            {!hasHighlight && (
+              <div style={{
+                padding: "6px 4px 8px",
+                fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase",
+                color: "var(--eyebrow)", fontWeight: 500,
+              }}>Ranked by NPV swing</div>
+            )}
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
-              {gitems.map(a => (
+              {sortedFlat.map(a => (
                 <EstimateCard
                   key={a.id} a={a}
                   expanded={expanded === a.id}
@@ -120,11 +161,34 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
                   onChange={(v) => setAssumption(a.id, v)}
                   onEdit={onEditAssumption ? () => onEditAssumption(a) : null}
                   readOnly={readOnly}
+                  range={rangeFor(a.id)}
                 />
               ))}
             </div>
           </div>
-        ))}
+        ) : (
+          Object.entries(groups).map(([gname, gitems]) => (
+            <div key={gname} style={{ marginBottom: 6 }}>
+              <div style={{
+                padding: "6px 4px 8px",
+                fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase",
+                color: "var(--eyebrow)", fontWeight: 500,
+              }}>{gname}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+                {gitems.map(a => (
+                  <EstimateCard
+                    key={a.id} a={a}
+                    expanded={expanded === a.id}
+                    onToggle={() => setExpanded(expanded === a.id ? null : a.id)}
+                    onChange={(v) => setAssumption(a.id, v)}
+                    onEdit={onEditAssumption ? () => onEditAssumption(a) : null}
+                    readOnly={readOnly}
+                  />
+                ))}
+              </div>
+            </div>
+          ))
+        )}
         {visible.length === 0 && (
           <div style={{ padding: "20px 8px", color: "var(--muted)", fontSize: 12, textAlign: "center" }}>
             No estimates match "{query}".
@@ -136,8 +200,9 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
   );
 };
 
-const EstimateCard = ({ a, expanded, onToggle, onChange, accentColor, onEdit, readOnly }) => {
+const EstimateCard = ({ a, expanded, onToggle, onChange, accentColor, onEdit, readOnly, range }) => {
   const Icn = IconMap[a.icon] || IconCube;
+  const rangeText = (typeof range === "number" && range > 0) ? fmtMoney(range) : null;
   return (
     <div style={{
       border: accentColor ? `1.5px solid ${accentColor}` : "1px solid var(--line)",
@@ -154,7 +219,17 @@ const EstimateCard = ({ a, expanded, onToggle, onChange, accentColor, onEdit, re
           color: "var(--muted)", flex: "0 0 auto",
         }}><Icn size={12} /></span>
         <span style={{ fontSize: 12.5, fontWeight: 500, flex: 1, minWidth: 0 }}>{a.label}</span>
-        <IconDots size={14} style={{ color: "var(--muted-2)" }} />
+        {rangeText ? (
+          <span title="NPV swing across this estimate's sensitivity range"
+            style={{
+              fontSize: 10.5, fontFamily: "var(--mono)", color: "var(--muted)",
+              padding: "2px 7px", borderRadius: 999,
+              background: "var(--surface-2)", border: "1px solid var(--line)",
+              whiteSpace: "nowrap",
+            }}>±{rangeText}</span>
+        ) : (
+          <IconDots size={14} style={{ color: "var(--muted-2)" }} />
+        )}
       </div>
       {readOnly ? (
         <div style={{
