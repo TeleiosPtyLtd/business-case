@@ -403,7 +403,7 @@ const SummaryPanel = ({ items, model, A, irrValue, project, assumptions, include
   })).sort((a, b) => b.pv - a.pv);
   const topBenefit = sortedBenefits[0];
 
-  const sensitivities = computeSensitivity(items, A, assumptions, 0.25).slice(0, 5);
+  const sensitivities = computeSensitivity(items, A, assumptions, { includeSoft }).slice(0, 5);
   const sensMax = Math.max(...sensitivities.map(s => s.range), 1);
 
   return (

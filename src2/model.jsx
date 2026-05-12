@@ -351,9 +351,17 @@ function itemConfidence(item, A) {
 
 // Sensitivity: per-assumption ±25% by default; respect optional
 // sensitivityRange = { lo, hi } where lo/hi are multipliers on the base value.
-function computeSensitivity(items, A, baseAssumptions, defaultDelta = 0.25) {
-  const base = computeModel(items, A);
-  const baseNPV = base.npv;
+// Fourth arg accepts either a number (legacy: defaultDelta) or an options
+// object { defaultDelta, includeSoft }. includeSoft must match the caller's
+// current view so re-rankings track the global soft-value toggle.
+function computeSensitivity(items, A, baseAssumptions, optsOrDelta) {
+  const opts = typeof optsOrDelta === "number"
+    ? { defaultDelta: optsOrDelta }
+    : (optsOrDelta || {});
+  const defaultDelta = opts.defaultDelta != null ? opts.defaultDelta : 0.25;
+  const includeSoft  = !!opts.includeSoft;
+  const modelOpts = { includeSoft };
+  const baseNPV = computeModel(items, A, modelOpts).npv;
   const out = [];
   for (const a of baseAssumptions) {
     if (typeof a.value !== "number") continue;
@@ -362,8 +370,8 @@ function computeSensitivity(items, A, baseAssumptions, defaultDelta = 0.25) {
     const hiMul = r && Number.isFinite(r.hi) ? r.hi : 1 + defaultDelta;
     const lo = { ...A, [a.id]: a.value * loMul };
     const hi = { ...A, [a.id]: a.value * hiMul };
-    const npvLo = computeModel(items, lo).npv;
-    const npvHi = computeModel(items, hi).npv;
+    const npvLo = computeModel(items, lo, modelOpts).npv;
+    const npvHi = computeModel(items, hi, modelOpts).npv;
     out.push({
       id: a.id, label: a.label,
       base: baseNPV, lo: npvLo, hi: npvHi,

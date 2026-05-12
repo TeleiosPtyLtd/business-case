@@ -5,7 +5,7 @@ const IconMap = {
   IconBuilding, IconClock, IconShield,
 };
 
-const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, selectedItemLabel, selectedItemColor, onClearSelection, onEditAssumption, readOnly, sortBySensitivity, onToggleSort }) => {
+const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, selectedItemLabel, selectedItemColor, onClearSelection, onEditAssumption, readOnly, sortBySensitivity, onToggleSort, includeSoft }) => {
   const [expanded, setExpanded] = React.useState(null);
   const [query, setQuery] = React.useState("");
   const scrollRef = React.useRef(null);
@@ -20,13 +20,15 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
   // sensitivity range, then sort by magnitude. Only computed when the
   // toggle is on; one computeSensitivity call covers all assumptions in
   // O(n·computeModel) so it's cheap for typical models.
+  // Re-rank when includeSoft flips — toggling the soft-value switch should
+  // shift which assumptions are the biggest NPV levers.
   const sensitivityRanges = React.useMemo(() => {
     if (!sortBySensitivity) return null;
     const A = {};
     for (const a of assumptions) A[a.id] = a.value;
-    const sens = computeSensitivity(items, A, assumptions, 0.25);
+    const sens = computeSensitivity(items, A, assumptions, { includeSoft: !!includeSoft });
     return new Map(sens.map(s => [s.id, s.range]));
-  }, [sortBySensitivity, items, assumptions]);
+  }, [sortBySensitivity, items, assumptions, includeSoft]);
 
   // Filter by case-insensitive match on id, label, group, description
   const q = query.trim().toLowerCase();
@@ -52,7 +54,6 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
       (groups[a.group] = groups[a.group] || []).push(a);
     }
   }
-  const rangeFor = (id) => sensitivityRanges ? sensitivityRanges.get(id) : null;
 
   // Snap rail back to the top whenever the selection changes so the pinned
   // section is in view.
@@ -76,23 +77,21 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
           {onToggleSort && (
             <button onClick={onToggleSort}
               title={sortBySensitivity
-                ? "Currently sorted by |∂NPV/∂x| — click to restore groups"
-                : "Sort by sensitivity: |∂NPV/∂x|"}
+                ? "Currently sorted by impact — click to restore groups"
+                : "Sort by the size of each estimate's effect on NPV"}
               style={{
                 border: `1px solid ${sortBySensitivity ? "var(--ink)" : "var(--line)"}`,
                 background: sortBySensitivity ? "var(--ink)" : "var(--surface-2)",
                 color: sortBySensitivity ? "var(--bg)" : "var(--muted)",
                 padding: "3px 9px", borderRadius: 999,
-                fontSize: 10.5, fontFamily: "var(--mono)",
+                fontSize: 11,
                 cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4,
                 whiteSpace: "nowrap",
-              }}>↕ impact</button>
+              }}>Sort by impact</button>
           )}
         </div>
         <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--muted)" }}>
-          {sortBySensitivity
-            ? "Sorted by NPV swing. Largest |Δ NPV| first."
-            : "Editable inputs that drive every cost and benefit. Click a row for context."}
+          Editable inputs that drive every cost and benefit. Click a row for context.
         </div>
         <input type="text" value={query} onChange={e => setQuery(e.target.value)}
           placeholder="Search estimates…"
@@ -136,7 +135,6 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
                   onEdit={onEditAssumption ? () => onEditAssumption(a) : null}
                   accentColor={selectedItemColor}
                   readOnly={readOnly}
-                  range={rangeFor(a.id)}
                 />
               ))}
             </div>
@@ -161,7 +159,6 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
                   onChange={(v) => setAssumption(a.id, v)}
                   onEdit={onEditAssumption ? () => onEditAssumption(a) : null}
                   readOnly={readOnly}
-                  range={rangeFor(a.id)}
                 />
               ))}
             </div>
@@ -200,9 +197,8 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
   );
 };
 
-const EstimateCard = ({ a, expanded, onToggle, onChange, accentColor, onEdit, readOnly, range }) => {
+const EstimateCard = ({ a, expanded, onToggle, onChange, accentColor, onEdit, readOnly }) => {
   const Icn = IconMap[a.icon] || IconCube;
-  const rangeText = (typeof range === "number" && range > 0) ? fmtMoney(range) : null;
   return (
     <div style={{
       border: accentColor ? `1.5px solid ${accentColor}` : "1px solid var(--line)",
@@ -219,17 +215,7 @@ const EstimateCard = ({ a, expanded, onToggle, onChange, accentColor, onEdit, re
           color: "var(--muted)", flex: "0 0 auto",
         }}><Icn size={12} /></span>
         <span style={{ fontSize: 12.5, fontWeight: 500, flex: 1, minWidth: 0 }}>{a.label}</span>
-        {rangeText ? (
-          <span title="NPV swing across this estimate's sensitivity range"
-            style={{
-              fontSize: 10.5, fontFamily: "var(--mono)", color: "var(--muted)",
-              padding: "2px 7px", borderRadius: 999,
-              background: "var(--surface-2)", border: "1px solid var(--line)",
-              whiteSpace: "nowrap",
-            }}>±{rangeText}</span>
-        ) : (
-          <IconDots size={14} style={{ color: "var(--muted-2)" }} />
-        )}
+        <IconDots size={14} style={{ color: "var(--muted-2)" }} />
       </div>
       {readOnly ? (
         <div style={{

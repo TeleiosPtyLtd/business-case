@@ -369,19 +369,17 @@ const App = () => {
               </div>
               <SummaryRow label="Net Present Value (NPV)" tooltip="npv" helper={`${HORIZON}-year horizon, ${A_eff.discount_rate}% discount`}
                 value={<span style={{ color: model.npv >= 0 ? "var(--green-deep)" : "var(--red-deep)" }}>{fmtMoney(model.npv, { precise: true })}</span>} />
-              <SummaryRow label="Benefit Cost Ratio (BCR)" tooltip="bcr" helper="benefits ÷ costs"
+              <SummaryRow label="Benefit Cost Ratio (BCR)" tooltip="bcr"
                 value={<span style={{ color: model.bcr >= 1 ? "var(--green-deep)" : "var(--red-deep)" }}>{model.bcr.toFixed(2)}</span>} />
-              <SummaryRow label="Internal Rate of Return" tooltip="irr" helper="annualised"
+              <SummaryRow label="Internal Rate of Return" tooltip="irr"
                 value={<span>{irrValue == null ? "—" : fmtPct(irrValue)}</span>} />
               <div style={{
                 padding: "14px 24px", borderTop: "1px solid var(--line)",
                 display: "flex", justifyContent: "space-between", alignItems: "center",
               }}>
-                <div>
-                  <div style={{ fontSize: 13.5 }}>Include soft value</div>
-                  <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 2 }}>
-                    Freed time, optionality, capability reuse
-                  </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 13.5 }}>Include soft value</span>
+                  <HelpTip topic="soft" />
                 </div>
                 <Toggle2 on={includeSoft} onChange={setIncludeSoft} />
               </div>
@@ -430,6 +428,7 @@ const App = () => {
               readOnly={viewOnly}
               sortBySensitivity={sortBySensitivity}
               onToggleSort={() => setSortBySensitivity(s => !s)}
+              includeSoft={includeSoft}
             />
           </div>
         )}
@@ -459,6 +458,7 @@ const App = () => {
                   readOnly={true}
                   sortBySensitivity={sortBySensitivity}
                   onToggleSort={() => setSortBySensitivity(s => !s)}
+                  includeSoft={includeSoft}
                 />
               </div>
             )}
