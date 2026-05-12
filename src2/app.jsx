@@ -88,6 +88,7 @@ const App = () => {
   const [shareOpen, setShareOpen] = React.useState(false);
   const [share, setShare] = React.useState(() => __persisted?.share || null);
   const [selectedItemId, setSelectedItemId] = React.useState(() => __persisted?.selectedItemId || null);
+  const [hoveredItemId, setHoveredItemId] = React.useState(null); // transient — not persisted
   const [sortBySensitivity, setSortBySensitivity] = React.useState(() => !!__persisted?.sortBySensitivity);
   const [saveState, setSaveState] = React.useState("idle"); // idle | saving | saved
   const [estimatesOpen, setEstimatesOpen] = React.useState(false); // mobile collapsible
@@ -187,20 +188,24 @@ const App = () => {
     });
   };
 
-  // Derive which assumption ids the currently-selected item depends on.
-  // Prefer parsing the formula source over trusting item.uses, since
-  // wizard-created items only have _grossSrc on first save.
-  const highlightedIds = React.useMemo(() => {
-    if (!selectedItemId) return [];
-    const it = items.find(i => i.id === selectedItemId);
+  // Derive which assumption ids a given item depends on. Prefer parsing the
+  // formula source over trusting item.uses (wizard-created items only have
+  // _grossSrc on first save).
+  const idsFor = React.useCallback((id) => {
+    if (!id) return [];
+    const it = items.find(i => i.id === id);
     if (!it) return [];
     const allIds = new Set(assumptionsEff.map(a => a.id));
     const fromFormula = extractAssumptionIds(it._grossSrc, allIds);
     if (fromFormula.length) return fromFormula;
     if (Array.isArray(it.uses)) return it.uses.filter(id => allIds.has(id));
     return [];
-  }, [selectedItemId, items, assumptionsEff]);
+  }, [items, assumptionsEff]);
+
+  const highlightedIds = React.useMemo(() => idsFor(selectedItemId), [idsFor, selectedItemId]);
+  const hoveredIds     = React.useMemo(() => idsFor(hoveredItemId),  [idsFor, hoveredItemId]);
   const selectedItem = selectedItemId ? items.find(i => i.id === selectedItemId) : null;
+  const hoveredItem  = hoveredItemId  ? items.find(i => i.id === hoveredItemId)  : null;
 
   // Persist editable state to localStorage on change. Debounced so slider
   // drags don't thrash. Surface "saving" → "saved" → "idle" so the user
@@ -441,9 +446,9 @@ const App = () => {
             })}
           </div>
 
-          {tab === "edit"     && <EditModelPanel    items={adjustedItems} model={model} A={A_eff} includeSoft={includeSoft} onAddItem={(k) => setAddKind(k)} onRemoveItem={onRemoveItem} onEditItem={setEditingItem} readOnly={viewOnly} selectedItemId={selectedItemId} onSelectItem={setSelectedItemId} isMobile={isMobile} />}
-          {tab === "timeline" && <TimelinePanel     items={adjustedItems} model={model} A={A_eff} includeSoft={includeSoft} />}
-          {tab === "data"     && <DataTablesPanel   items={adjustedItems} model={model} assumptions={assumptionsEff} includeSoft={includeSoft} />}
+          {tab === "edit"     && <EditModelPanel    items={adjustedItems} model={model} A={A_eff} includeSoft={includeSoft} onAddItem={(k) => setAddKind(k)} onRemoveItem={onRemoveItem} onEditItem={setEditingItem} readOnly={viewOnly} selectedItemId={selectedItemId} onSelectItem={setSelectedItemId} onHoverItem={setHoveredItemId} isMobile={isMobile} />}
+          {tab === "timeline" && <TimelinePanel     items={adjustedItems} model={model} A={A_eff} includeSoft={includeSoft} selectedItemId={selectedItemId} onSelectItem={setSelectedItemId} onHoverItem={setHoveredItemId} />}
+          {tab === "data"     && <DataTablesPanel   items={adjustedItems} model={model} assumptions={assumptionsEff} includeSoft={includeSoft} selectedItemId={selectedItemId} onSelectItem={setSelectedItemId} onHoverItem={setHoveredItemId} />}
           {tab === "summary"  && <SummaryPanel      items={adjustedItems} model={model} A={A_eff} irrValue={irrValue} project={project} assumptions={assumptionsEff} includeSoft={includeSoft} scenario={sLabel.label} />}
         </div>
 
@@ -456,8 +461,10 @@ const App = () => {
               items={adjustedItems}
               scenario={scenario}
               highlightedIds={highlightedIds}
+              hoveredIds={hoveredIds}
               selectedItemLabel={selectedItem?.name || null}
               selectedItemColor={selectedItem?.color || null}
+              hoveredItemColor={hoveredItem?.color || null}
               onClearSelection={() => setSelectedItemId(null)}
               onEditAssumption={viewOnly ? null : setEditingAssumption}
               readOnly={viewOnly}

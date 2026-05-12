@@ -26,19 +26,22 @@ const ConfidenceChip = ({ confidence, hideLabel }) => {
 };
 
 // ---------- Item row ----------
-const ItemRow = ({ item, series, A, expanded, selected, onClick, onRemove, onEdit, includeSoft }) => {
+const ItemRow = ({ item, series, A, expanded, selected, onClick, onRemove, onEdit, onHoverIn, onHoverOut, includeSoft }) => {
   const conf = itemConfidence(item, A);
   const isCost = item.kind === "cost";
   const valuePV = isCost ? series.cashPV : (series.cashPV + (includeSoft ? series.softPV : 0));
 
   return (
-    <div style={{
-      border: selected ? `1.5px solid ${item.color}` : "1px solid var(--line)",
-      borderRadius: 10,
-      background: "var(--surface)", overflow: "hidden",
-      boxShadow: selected ? `0 0 0 3px color-mix(in srgb, ${item.color} 12%, transparent)` : undefined,
-      transition: "border-color 120ms, box-shadow 120ms",
-    }}>
+    <div
+      onMouseEnter={onHoverIn}
+      onMouseLeave={onHoverOut}
+      style={{
+        border: selected ? `1.5px solid ${item.color}` : "1px solid var(--line)",
+        borderRadius: 10,
+        background: "var(--surface)", overflow: "hidden",
+        boxShadow: selected ? `0 0 0 3px color-mix(in srgb, ${item.color} 12%, transparent)` : undefined,
+        transition: "border-color 120ms, box-shadow 120ms",
+      }}>
       <button onClick={onClick} style={{
         width: "100%", display: "flex", alignItems: "center", gap: 10,
         padding: "10px 14px", border: "none", background: "transparent",

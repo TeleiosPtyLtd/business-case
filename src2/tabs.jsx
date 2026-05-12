@@ -1,10 +1,11 @@
 // Tab panels — Edit Model, Timeline, Data Tables, Summary
 
 // ---------- EDIT MODEL ----------
-const EditModelPanel = ({ items, model, A, onAddItem, onRemoveItem, onEditItem, includeSoft, readOnly, selectedItemId, onSelectItem, isMobile }) => {
+const EditModelPanel = ({ items, model, A, onAddItem, onRemoveItem, onEditItem, includeSoft, readOnly, selectedItemId, onSelectItem, onHoverItem, isMobile }) => {
   const costs = items.filter(i => i.kind === "cost");
   const benefits = items.filter(i => i.kind === "benefit");
   const toggle = (id) => onSelectItem(selectedItemId === id ? null : id);
+  const hover = (id) => onHoverItem && onHoverItem(id);
 
   const yearTotals = model.yearTotals;
   const maxYear = Math.max(...yearTotals.cost, ...yearTotals.benefit, 1) * 1.05;
@@ -32,6 +33,8 @@ const EditModelPanel = ({ items, model, A, onAddItem, onRemoveItem, onEditItem, 
             expanded={selectedItemId === i.id}
             selected={selectedItemId === i.id}
             onClick={() => toggle(i.id)}
+            onHoverIn={() => hover(i.id)}
+            onHoverOut={() => hover(null)}
             onEdit={!readOnly && onEditItem ? () => onEditItem(i) : null}
             onRemove={!readOnly && i.removable ? () => onRemoveItem(i.id) : null} />
         ))}
@@ -45,6 +48,8 @@ const EditModelPanel = ({ items, model, A, onAddItem, onRemoveItem, onEditItem, 
             expanded={selectedItemId === i.id}
             selected={selectedItemId === i.id}
             onClick={() => toggle(i.id)}
+            onHoverIn={() => hover(i.id)}
+            onHoverOut={() => hover(null)}
             onEdit={!readOnly && onEditItem ? () => onEditItem(i) : null}
             onRemove={!readOnly && i.removable ? () => onRemoveItem(i.id) : null} />
         ))}
@@ -98,7 +103,9 @@ const AddButton = ({ label, onClick }) => (
 );
 
 // ---------- TIMELINE ----------
-const TimelinePanel = ({ items, model, A, includeSoft }) => {
+const TimelinePanel = ({ items, model, A, includeSoft, selectedItemId, onSelectItem, onHoverItem }) => {
+  const toggle = (id) => onSelectItem && onSelectItem(selectedItemId === id ? null : id);
+  const hover = (id) => onHoverItem && onHoverItem(id);
   const ranges = items.map(i => {
     const s = model.perItem[i.id];
     const vals = i.kind === "benefit" ? s.cash.map((c, y) => c + (includeSoft ? s.soft[y] : 0)) : s.cash;
@@ -139,11 +146,20 @@ const TimelinePanel = ({ items, model, A, includeSoft }) => {
       </div>
 
       {ranges.map(r => (
-        <div key={r.item.id} style={{
-          display: "grid", gridTemplateColumns: `260px repeat(${HORIZON}, 1fr)`,
-          gap: 0, alignItems: "center", padding: "6px 0",
-          borderBottom: "1px dashed var(--line)",
-        }}>
+        <div key={r.item.id}
+          onClick={() => toggle(r.item.id)}
+          onMouseEnter={() => hover(r.item.id)}
+          onMouseLeave={() => hover(null)}
+          style={{
+            display: "grid", gridTemplateColumns: `260px repeat(${HORIZON}, 1fr)`,
+            gap: 0, alignItems: "center", padding: "6px 8px",
+            margin: "0 -8px",
+            borderBottom: "1px dashed var(--line)",
+            borderRadius: 8, cursor: onSelectItem ? "pointer" : "default",
+            outline: selectedItemId === r.item.id ? `1.5px solid ${r.item.color}` : "1.5px solid transparent",
+            background: selectedItemId === r.item.id ? `color-mix(in srgb, ${r.item.color} 6%, transparent)` : "transparent",
+            transition: "outline-color 120ms, background 120ms",
+          }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, paddingRight: 12, minWidth: 0 }}>
             <Dot2 color={r.item.color} />
             <div style={{ minWidth: 0, flex: 1 }}>
@@ -186,11 +202,13 @@ const Legend = ({ color, label }) => (
 );
 
 // ---------- DATA TABLES ----------
-const DataTablesPanel = ({ items, model, assumptions, includeSoft }) => {
+const DataTablesPanel = ({ items, model, assumptions, includeSoft, selectedItemId, onSelectItem, onHoverItem }) => {
   const seriesFor = (i) => {
     const s = model.perItem[i.id];
     return i.kind === "benefit" ? s.cash.map((c, y) => c + (includeSoft ? s.soft[y] : 0)) : s.cash;
   };
+  const toggle = (id) => onSelectItem && onSelectItem(selectedItemId === id ? null : id);
+  const hover = (id) => onHoverItem && onHoverItem(id);
   return (
     <div className="panel-fade" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <Card2 padding={0} style={{ borderRadius: 20, overflow: "hidden" }}>
@@ -216,12 +234,20 @@ const DataTablesPanel = ({ items, model, assumptions, includeSoft }) => {
             <tbody>
               <SectionRow label="Costs" />
               {items.filter(i => i.kind === "cost").map(i => (
-                <ItemDataRow key={i.id} item={i} values={seriesFor(i)} sign={-1} />
+                <ItemDataRow key={i.id} item={i} values={seriesFor(i)} sign={-1}
+                  selected={selectedItemId === i.id}
+                  onClick={() => toggle(i.id)}
+                  onHoverIn={() => hover(i.id)}
+                  onHoverOut={() => hover(null)} />
               ))}
               <TotalRow label="Total costs" values={model.yearTotals.cost} sign={-1} />
               <SectionRow label="Benefits" />
               {items.filter(i => i.kind === "benefit").map(i => (
-                <ItemDataRow key={i.id} item={i} values={seriesFor(i)} sign={+1} />
+                <ItemDataRow key={i.id} item={i} values={seriesFor(i)} sign={+1}
+                  selected={selectedItemId === i.id}
+                  onClick={() => toggle(i.id)}
+                  onHoverIn={() => hover(i.id)}
+                  onHoverOut={() => hover(null)} />
               ))}
               <TotalRow label="Total benefits" values={model.yearTotals.benefit} sign={+1} />
               <NetRow yearTotals={model.yearTotals} />
@@ -357,8 +383,19 @@ const SectionRow = ({ label }) => (
     }}>{label}</td>
   </tr>
 );
-const ItemDataRow = ({ item, values, sign }) => (
-  <tr style={{ borderTop: "1px solid var(--line)" }}>
+const ItemDataRow = ({ item, values, sign, selected, onClick, onHoverIn, onHoverOut }) => (
+  <tr
+    onClick={onClick}
+    onMouseEnter={onHoverIn}
+    onMouseLeave={onHoverOut}
+    style={{
+      borderTop: "1px solid var(--line)",
+      cursor: onClick ? "pointer" : "default",
+      background: selected ? `color-mix(in srgb, ${item.color} 9%, transparent)` : "transparent",
+      outline: selected ? `1.5px solid ${item.color}` : "none",
+      outlineOffset: -1,
+      transition: "background 120ms",
+    }}>
     <Td left><span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><Dot2 color={item.color} /> {item.name}</span></Td>
     {values.map((v, y) => (
       <Td key={y} mono color={v < 1 ? "var(--muted-2)" : undefined}>

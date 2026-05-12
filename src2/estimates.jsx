@@ -5,30 +5,40 @@ const IconMap = {
   IconBuilding, IconClock, IconShield,
 };
 
-const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, selectedItemLabel, selectedItemColor, onClearSelection, onEditAssumption, readOnly, sortBySensitivity, onToggleSort, includeSoft }) => {
+const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, hoveredIds, selectedItemLabel, selectedItemColor, hoveredItemColor, onClearSelection, onEditAssumption, readOnly, sortBySensitivity, onToggleSort, includeSoft, scenario }) => {
   const [expanded, setExpanded] = React.useState(null);
   const [query, setQuery] = React.useState("");
   const scrollRef = React.useRef(null);
 
-  const highlightSet = React.useMemo(
-    () => new Set(highlightedIds || []),
-    [highlightedIds]
-  );
+  const highlightSet = React.useMemo(() => new Set(highlightedIds || []), [highlightedIds]);
+  const hoverSet     = React.useMemo(() => new Set(hoveredIds   || []), [hoveredIds]);
   const hasHighlight = highlightSet.size > 0;
 
-  // |∂NPV/∂x| ranking — compute the swing in NPV across each assumption's
-  // sensitivity range, then sort by magnitude. Only computed when the
-  // toggle is on; one computeSensitivity call covers all assumptions in
-  // O(n·computeModel) so it's cheap for typical models.
-  // Re-rank when includeSoft flips — toggling the soft-value switch should
-  // shift which assumptions are the biggest NPV levers.
-  const sensitivityRanges = React.useMemo(() => {
+  // Stable sort: capture the impact ranking once when sort is toggled on,
+  // and refresh only when structurally relevant inputs change — scenario,
+  // soft-value flag, items membership, assumption membership. Value edits
+  // on existing assumptions are deliberately NOT a trigger, so cards
+  // don't reshuffle while the user is dragging a slider.
+  // Lazy init so a page that hydrates with sortBySensitivity already true
+  // doesn't render a null frozenOrder for one frame.
+  const [frozenOrder, setFrozenOrder] = React.useState(() => {
     if (!sortBySensitivity) return null;
     const A = {};
     for (const a of assumptions) A[a.id] = a.value;
+    return computeSensitivity(items, A, assumptions, { includeSoft: !!includeSoft }).map(s => s.id);
+  });
+  const itemsKey       = React.useMemo(() => items.map(i => i.id).join("|"),       [items]);
+  const assumptionsKey = React.useMemo(() => assumptions.map(a => a.id).join("|"), [assumptions]);
+
+  React.useEffect(() => {
+    if (!sortBySensitivity) { setFrozenOrder(null); return; }
+    const A = {};
+    for (const a of assumptions) A[a.id] = a.value;
     const sens = computeSensitivity(items, A, assumptions, { includeSoft: !!includeSoft });
-    return new Map(sens.map(s => [s.id, s.range]));
-  }, [sortBySensitivity, items, assumptions, includeSoft]);
+    setFrozenOrder(sens.map(s => s.id));
+    // Intentionally excludes `assumptions`/`items` object refs — only the
+    // membership keys participate.
+  }, [sortBySensitivity, includeSoft, scenario, itemsKey, assumptionsKey]); // eslint-disable-line
 
   // Filter by case-insensitive match on id, label, group, description
   const q = query.trim().toLowerCase();
@@ -39,21 +49,75 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
     || (a.description || "").toLowerCase().includes(q);
 
   const visible = assumptions.filter(matches);
-  // Highlighted cards in their original ordering, then the rest:
-  //   - grouped (default), OR
-  //   - flat-sorted by |∂NPV/∂x| when the toggle is on
-  const highlighted = visible.filter(a => highlightSet.has(a.id));
+  const highlighted    = visible.filter(a => highlightSet.has(a.id));
   const nonHighlighted = visible.filter(a => !highlightSet.has(a.id));
-  const sortedFlat = sortBySensitivity && sensitivityRanges
-    ? [...nonHighlighted].sort((a, b) =>
-        (sensitivityRanges.get(b.id) || 0) - (sensitivityRanges.get(a.id) || 0))
-    : null;
+
+  // When sort is on, render in frozenOrder. Any assumption added since
+  // the last rerank lands at the end until the next structural change.
+  let sortedFlat = null;
+  if (sortBySensitivity && frozenOrder) {
+    const orderIdx = new Map(frozenOrder.map((id, i) => [id, i]));
+    sortedFlat = [...nonHighlighted].sort((a, b) => {
+      const ai = orderIdx.has(a.id) ? orderIdx.get(a.id) : Number.MAX_SAFE_INTEGER;
+      const bi = orderIdx.has(b.id) ? orderIdx.get(b.id) : Number.MAX_SAFE_INTEGER;
+      return ai - bi;
+    });
+  }
   const groups = {};
   if (!sortBySensitivity) {
     for (const a of nonHighlighted) {
       (groups[a.group] = groups[a.group] || []).push(a);
     }
   }
+
+  // -- FLIP animation --------------------------------------------------
+  // Refs per visible card. After every render we measure each card's new
+  // position; if it differs from the previously-recorded position, we
+  // apply an inverse transform and then animate it back to identity. This
+  // makes reorders (selecting an item, toggling sort, includeSoft flips,
+  // search filter changes) feel like the cards are gliding into place.
+  const cardRefs = React.useRef({});
+  const prevRects = React.useRef({});
+  React.useLayoutEffect(() => {
+    // Preserve unmounted ids' last-known positions so a card that vanishes
+    // from one parent (e.g. groups) and reappears in another (pinned) can
+    // animate the move.
+    const next = { ...prevRects.current };
+    for (const [id, el] of Object.entries(cardRefs.current)) {
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      const prev = prevRects.current[id];
+      if (prev && (Math.abs(prev.top - rect.top) > 0.5 || Math.abs(prev.left - rect.left) > 0.5)) {
+        const dx = prev.left - rect.left;
+        const dy = prev.top  - rect.top;
+        el.style.transition = "none";
+        el.style.transform  = `translate(${dx}px, ${dy}px)`;
+        // eslint-disable-next-line no-unused-expressions
+        el.getBoundingClientRect(); // force reflow
+        requestAnimationFrame(() => {
+          el.style.transition = "transform 280ms cubic-bezier(0.22, 1, 0.36, 1)";
+          el.style.transform  = "";
+        });
+      }
+      next[id] = rect;
+    }
+    prevRects.current = next;
+  });
+  const setCardRef = (id) => (el) => {
+    if (el) cardRefs.current[id] = el;
+    else delete cardRefs.current[id];
+    // Intentionally keep prevRects[id] across unmounts: when a card moves
+    // between the pinned section and groups, the wrapper unmounts in one
+    // parent and a new wrapper mounts in another. Keeping the previous
+    // position around lets FLIP animate that cross-section move.
+  };
+
+  // Accent resolution per card: selected (strong) > hovered (light) > none.
+  const accentFor = (id) => {
+    if (highlightSet.has(id) && selectedItemColor) return { color: selectedItemColor, strong: true };
+    if (hoverSet.has(id) && hoveredItemColor)     return { color: hoveredItemColor,    strong: false };
+    return null;
+  };
 
   // Snap rail back to the top whenever the selection changes so the pinned
   // section is in view.
@@ -127,21 +191,23 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
               {highlighted.map(a => (
-                <EstimateCard
-                  key={a.id} a={a}
-                  expanded={expanded === a.id}
-                  onToggle={() => setExpanded(expanded === a.id ? null : a.id)}
-                  onChange={(v) => setAssumption(a.id, v)}
-                  onEdit={onEditAssumption ? () => onEditAssumption(a) : null}
-                  accentColor={selectedItemColor}
-                  readOnly={readOnly}
-                />
+                <div key={a.id} ref={setCardRef(a.id)} style={{ willChange: "transform" }}>
+                  <EstimateCard
+                    a={a}
+                    expanded={expanded === a.id}
+                    onToggle={() => setExpanded(expanded === a.id ? null : a.id)}
+                    onChange={(v) => setAssumption(a.id, v)}
+                    onEdit={onEditAssumption ? () => onEditAssumption(a) : null}
+                    accent={accentFor(a.id)}
+                    readOnly={readOnly}
+                  />
+                </div>
               ))}
             </div>
           </div>
         )}
 
-        {sortBySensitivity ? (
+        {sortBySensitivity && sortedFlat ? (
           <div style={{ marginBottom: 6 }}>
             {!hasHighlight && (
               <div style={{
@@ -152,14 +218,17 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
             )}
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
               {sortedFlat.map(a => (
-                <EstimateCard
-                  key={a.id} a={a}
-                  expanded={expanded === a.id}
-                  onToggle={() => setExpanded(expanded === a.id ? null : a.id)}
-                  onChange={(v) => setAssumption(a.id, v)}
-                  onEdit={onEditAssumption ? () => onEditAssumption(a) : null}
-                  readOnly={readOnly}
-                />
+                <div key={a.id} ref={setCardRef(a.id)} style={{ willChange: "transform" }}>
+                  <EstimateCard
+                    a={a}
+                    expanded={expanded === a.id}
+                    onToggle={() => setExpanded(expanded === a.id ? null : a.id)}
+                    onChange={(v) => setAssumption(a.id, v)}
+                    onEdit={onEditAssumption ? () => onEditAssumption(a) : null}
+                    accent={accentFor(a.id)}
+                    readOnly={readOnly}
+                  />
+                </div>
               ))}
             </div>
           </div>
@@ -173,14 +242,17 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
               }}>{gname}</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
                 {gitems.map(a => (
-                  <EstimateCard
-                    key={a.id} a={a}
-                    expanded={expanded === a.id}
-                    onToggle={() => setExpanded(expanded === a.id ? null : a.id)}
-                    onChange={(v) => setAssumption(a.id, v)}
-                    onEdit={onEditAssumption ? () => onEditAssumption(a) : null}
-                    readOnly={readOnly}
-                  />
+                  <div key={a.id} ref={setCardRef(a.id)} style={{ willChange: "transform" }}>
+                    <EstimateCard
+                      a={a}
+                      expanded={expanded === a.id}
+                      onToggle={() => setExpanded(expanded === a.id ? null : a.id)}
+                      onChange={(v) => setAssumption(a.id, v)}
+                      onEdit={onEditAssumption ? () => onEditAssumption(a) : null}
+                      accent={accentFor(a.id)}
+                      readOnly={readOnly}
+                    />
+                  </div>
                 ))}
               </div>
             </div>
@@ -197,15 +269,23 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
   );
 };
 
-const EstimateCard = ({ a, expanded, onToggle, onChange, accentColor, onEdit, readOnly }) => {
+const EstimateCard = ({ a, expanded, onToggle, onChange, accent, onEdit, readOnly }) => {
   const Icn = IconMap[a.icon] || IconCube;
+  // accent: { color, strong } | null
+  //   strong true  → selected — 1.5px border + soft halo
+  //   strong false → hover preview — 1px tinted border, no halo
+  const border = accent
+    ? `${accent.strong ? 1.5 : 1}px solid ${accent.color}`
+    : "1px solid var(--line)";
+  const boxShadow = accent && accent.strong
+    ? `0 0 0 3px color-mix(in srgb, ${accent.color} 12%, transparent)`
+    : undefined;
   return (
     <div style={{
-      border: accentColor ? `1.5px solid ${accentColor}` : "1px solid var(--line)",
-      borderRadius: 14,
+      border, borderRadius: 14,
       padding: 12, background: "var(--surface)",
-      boxShadow: accentColor ? `0 0 0 3px color-mix(in srgb, ${accentColor} 12%, transparent)` : undefined,
-      transition: "border-color 120ms, box-shadow 120ms",
+      boxShadow,
+      transition: "border-color 160ms ease, box-shadow 160ms ease",
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
         <span style={{
