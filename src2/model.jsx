@@ -50,6 +50,19 @@ function validateFormula(expr, allowedIds) {
   return null;
 }
 
+// Returns the de-duped list of assumption ids referenced by a formula
+// string. Math helpers (pow, min, etc.) and unknown identifiers are
+// filtered out. Used to derive `item.uses` from a formula and to
+// highlight which estimates drive a selected item.
+function extractAssumptionIds(expr, allowedIds) {
+  if (expr == null || typeof expr !== "string") return [];
+  const allowed = allowedIds instanceof Set ? allowedIds : new Set(allowedIds);
+  const idents = expr.match(__IDENT_RE) || [];
+  const used = new Set();
+  for (const id of idents) if (allowed.has(id)) used.add(id);
+  return [...used];
+}
+
 function compileFormula(expr, assumptionIds) {
   if (typeof expr === "function") return expr;
   if (typeof expr === "number")   return () => expr;
@@ -182,11 +195,19 @@ const __CAT_COLORS = __CFG.categoryColors || {};
 
 const CONFIG_VALIDATION = validateConfig(__CFG);
 
-const DEFAULT_ITEMS = (__CFG.items || []).map(it => ({
-  ...it,
-  color:  __CAT_COLORS[it.category] || it.color || "var(--muted-2)",
-  gross:  compileFormula(it.gross, __ASSUMPTION_IDS),
-}));
+const DEFAULT_ITEMS = (__CFG.items || []).map(it => {
+  // Preserve the formula source so items survive a localStorage / snapshot
+  // round-trip (functions don't serialise) and so we can derive `uses` later.
+  const _src = (typeof it.gross === "string" || typeof it.gross === "number")
+    ? String(it.gross)
+    : (it._grossSrc || null);
+  return {
+    ...it,
+    color:  __CAT_COLORS[it.category] || it.color || "var(--muted-2)",
+    _grossSrc: _src,
+    gross:  compileFormula(typeof it.gross === "function" ? it.gross : _src, __ASSUMPTION_IDS),
+  };
+});
 
 const SCENARIO_OVERRIDES = {};
 const SCENARIO_COUNTERFACTUAL_SHIFT = {};
@@ -375,6 +396,6 @@ Object.assign(window, {
   CONFIG_VALIDATION,
   computeModel, computeItemSeries, computeIRR, cumulativePhaseProb,
   itemConfidence, computeSensitivity,
-  validateFormula, validateConfig,
+  validateFormula, validateConfig, extractAssumptionIds, compileFormula,
   fmtMoney, fmtMoneyExact, fmtPct,
 });

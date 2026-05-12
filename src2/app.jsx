@@ -1,26 +1,113 @@
 // App entry — wires assumptions, items, scenario, and tabs.
 // PROJECT_META and SCENARIO_LABELS come from src2/project.config.js via model.jsx.
 
+// Per-URL localStorage key. Viewer mode uses the share id; author mode falls
+// back to the project shortName so different local projects don't collide.
+const STATE_KEY = (() => {
+  const m = (window.location.pathname || "").match(/^\/view\/([^/]+)/);
+  if (m) return `cbagent.state.view.${m[1]}`;
+  const slug = (PROJECT_META.shortName || "default").replace(/[^A-Za-z0-9_-]/g, "_");
+  return `cbagent.state.author.${slug}`;
+})();
+
+function loadPersistedState() {
+  try {
+    const raw = localStorage.getItem(STATE_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    if (s && s.v === 1) return s;
+  } catch {}
+  return null;
+}
+
+// Items contain a compiled `gross` function which doesn't survive JSON.
+// Strip it before storage; the source string lives in `_grossSrc`.
+function serialiseItems(items) {
+  return items.map(it => {
+    const copy = { ...it };
+    delete copy.gross;
+    return copy;
+  });
+}
+function rehydrateItems(serialised, assumptionIds) {
+  return serialised.map(it => ({
+    ...it,
+    gross: compileFormula(it._grossSrc, assumptionIds),
+  }));
+}
+
+// Reactive mobile detection via matchMedia. Threshold lines up with the
+// stylesheet rules in index.html.
+function useIsMobile(breakpointPx = 760) {
+  const [isMobile, setIsMobile] = React.useState(() =>
+    typeof window !== "undefined" &&
+    window.matchMedia(`(max-width: ${breakpointPx}px)`).matches
+  );
+  React.useEffect(() => {
+    const mql = window.matchMedia(`(max-width: ${breakpointPx}px)`);
+    const onChange = (e) => setIsMobile(e.matches);
+    if (mql.addEventListener) mql.addEventListener("change", onChange);
+    else mql.addListener(onChange);
+    return () => {
+      if (mql.removeEventListener) mql.removeEventListener("change", onChange);
+      else mql.removeListener(onChange);
+    };
+  }, [breakpointPx]);
+  return isMobile;
+}
+
 const App = () => {
-  const [theme, setTheme] = React.useState("light");
+  const isMobile = useIsMobile();
+  const __snap = window.PROJECT_CONFIG || {};
+  const __persisted = React.useMemo(loadPersistedState, []);
+
+  const [theme, setTheme] = React.useState(() => __persisted?.theme || "light");
   React.useEffect(() => { document.body.dataset.theme = theme; }, [theme]);
 
-  const __snap = window.PROJECT_CONFIG || {};
-  const [scenario, setScenario] = React.useState(DEFAULT_SCENARIO);
+  const [scenario, setScenario] = React.useState(() => __persisted?.scenario || DEFAULT_SCENARIO);
   const [scenarioOpen, setScenarioOpen] = React.useState(false);
-  const [items, setItems] = React.useState(DEFAULT_ITEMS);
-  const [includeSoft, setIncludeSoft] = React.useState(!!__snap.__includeSoft);
-  const [tab, setTab] = React.useState("edit");
+  const [customAssumptions, setCustomAssumptions] = React.useState(() => __persisted?.customAssumptions || []);
+  const __allAssumptionIds = React.useMemo(
+    () => [...DEFAULT_ASSUMPTIONS.map(a => a.id), ...customAssumptions.map(a => a.id)],
+    [customAssumptions]
+  );
+  const [items, setItems] = React.useState(() => {
+    if (__persisted?.items) {
+      try { return rehydrateItems(__persisted.items, __allAssumptionIds); }
+      catch (e) { console.error("Failed to rehydrate items:", e); }
+    }
+    return DEFAULT_ITEMS;
+  });
+  const [includeSoft, setIncludeSoft] = React.useState(() =>
+    __persisted ? !!__persisted.includeSoft : !!__snap.__includeSoft
+  );
+  const [tab, setTab] = React.useState(() => __persisted?.tab || "edit");
   const [addKind, setAddKind] = React.useState(null);
+  const [editingItem, setEditingItem] = React.useState(null);
+  const [editingAssumption, setEditingAssumption] = React.useState(null);
   const [shareOpen, setShareOpen] = React.useState(false);
+  const [selectedItemId, setSelectedItemId] = React.useState(() => __persisted?.selectedItemId || null);
+  const [saveState, setSaveState] = React.useState("idle"); // idle | saving | saved
+  const [resetArmed, setResetArmed] = React.useState(false);
+  const [estimatesOpen, setEstimatesOpen] = React.useState(false); // mobile collapsible
+  // On mobile we present the model as view-only, regardless of READ_ONLY.
+  const viewOnly = READ_ONLY || isMobile;
 
-  // Apply scenario overrides on top of defaults
+  // Apply scenario overrides on top of defaults + custom assumptions.
+  // customAssumptions may *shadow* an entry in DEFAULT_ASSUMPTIONS by id
+  // (used to edit metadata of a default assumption); ids not in defaults
+  // are appended as truly new assumptions.
   const assumptions = React.useMemo(() => {
-    const overrides = SCENARIO_OVERRIDES[scenario] || {};
-    return DEFAULT_ASSUMPTIONS.map(a =>
-      a.id in overrides ? { ...a, value: overrides[a.id] } : a
+    const sOverrides = SCENARIO_OVERRIDES[scenario] || {};
+    const customById = new Map(customAssumptions.map(a => [a.id, a]));
+    const defaultIds = new Set(DEFAULT_ASSUMPTIONS.map(a => a.id));
+    const base = DEFAULT_ASSUMPTIONS.map(a => customById.get(a.id) || a);
+    const appended = customAssumptions.filter(a => !defaultIds.has(a.id));
+    const merged = [...base, ...appended];
+    return merged.map(a =>
+      a.id in sOverrides ? { ...a, value: sOverrides[a.id] } : a
     );
-  }, [scenario]);
+  }, [scenario, customAssumptions]);
 
   // Apply scenario adjustments: global counterfactual shift + per-item overrides.
   const adjustedItems = React.useMemo(() => {
@@ -43,16 +130,25 @@ const App = () => {
     return o;
   }, [assumptions]);
 
-  // Local "what-if" overrides on top of scenario assumptions
-  const [overrides, setOverrides] = React.useState(__snap.__overrides || {});
+  // Local "what-if" overrides on top of scenario assumptions.
+  // Hydration precedence: localStorage > snapshot.__overrides > {}.
+  const [overrides, setOverrides] = React.useState(() =>
+    __persisted?.overrides || __snap.__overrides || {}
+  );
   const setAssumption = (id, value) => setOverrides(prev => ({ ...prev, [id]: value }));
   const A_eff = React.useMemo(() => ({ ...A, ...overrides }), [A, overrides]);
   const assumptionsEff = React.useMemo(
     () => assumptions.map(a => a.id in overrides ? { ...a, value: overrides[a.id], modified: true } : a),
     [assumptions, overrides]
   );
-  // Reset overrides when scenario changes
-  React.useEffect(() => { setOverrides({}); }, [scenario]);
+  // Reset overrides + selection when scenario changes (but skip on initial mount
+  // so we don't wipe out hydrated state).
+  const __mounted = React.useRef(false);
+  React.useEffect(() => {
+    if (!__mounted.current) { __mounted.current = true; return; }
+    setOverrides({});
+    setSelectedItemId(null);
+  }, [scenario]);
 
   const model = React.useMemo(
     () => computeModel(adjustedItems, A_eff, { includeSoft }),
@@ -63,8 +159,85 @@ const App = () => {
     [adjustedItems, A_eff, includeSoft]
   );
 
-  const onAddItem = (template) => setItems(prev => [...prev, { ...template, removable: true }]);
-  const onRemoveItem = (id) => setItems(prev => prev.filter(i => i.id !== id));
+  // Wizard payload: { item, newAssumptions?, isEdit? }.
+  const onAddItem = (payload) => {
+    const item = payload && payload.item ? payload.item : payload;
+    const newAss = (payload && payload.newAssumptions) || [];
+    const isEdit = !!(payload && payload.isEdit);
+    if (newAss.length) setCustomAssumptions(prev => [...prev, ...newAss]);
+    setItems(prev => isEdit
+      ? prev.map(i => i.id === item.id ? { ...i, ...item } : i)
+      : [...prev, { ...item, removable: true }]
+    );
+  };
+  const onRemoveItem = (id) => {
+    setItems(prev => prev.filter(i => i.id !== id));
+    if (selectedItemId === id) setSelectedItemId(null);
+  };
+  // Save (new or edit) of an assumption. Stored in customAssumptions; the
+  // assumptions useMemo merges/shadows DEFAULT_ASSUMPTIONS by id.
+  const onSaveAssumption = (a) => {
+    setCustomAssumptions(prev => {
+      const idx = prev.findIndex(x => x.id === a.id);
+      if (idx === -1) return [...prev, a];
+      const next = [...prev]; next[idx] = a; return next;
+    });
+  };
+
+  // Derive which assumption ids the currently-selected item depends on.
+  // Prefer parsing the formula source over trusting item.uses, since
+  // wizard-created items only have _grossSrc on first save.
+  const highlightedIds = React.useMemo(() => {
+    if (!selectedItemId) return [];
+    const it = items.find(i => i.id === selectedItemId);
+    if (!it) return [];
+    const allIds = new Set(assumptionsEff.map(a => a.id));
+    const fromFormula = extractAssumptionIds(it._grossSrc, allIds);
+    if (fromFormula.length) return fromFormula;
+    if (Array.isArray(it.uses)) return it.uses.filter(id => allIds.has(id));
+    return [];
+  }, [selectedItemId, items, assumptionsEff]);
+  const selectedItem = selectedItemId ? items.find(i => i.id === selectedItemId) : null;
+
+  // Persist editable state to localStorage on change. Debounced so slider
+  // drags don't thrash. Surface "saving" → "saved" → "idle" so the user
+  // can trust the persistence layer.
+  const __persistMounted = React.useRef(false);
+  React.useEffect(() => {
+    if (!__persistMounted.current) { __persistMounted.current = true; return; }
+    setSaveState("saving");
+    const handle = setTimeout(() => {
+      try {
+        localStorage.setItem(STATE_KEY, JSON.stringify({
+          v: 1,
+          items: serialiseItems(items),
+          overrides, scenario, includeSoft, theme, tab, selectedItemId,
+          customAssumptions,
+        }));
+        setSaveState("saved");
+      } catch (e) { setSaveState("idle"); /* quota or disabled — silent */ }
+    }, 200);
+    return () => clearTimeout(handle);
+  }, [items, overrides, scenario, includeSoft, theme, tab, selectedItemId, customAssumptions]);
+  // Fade "saved" back to idle after a moment so the indicator doesn't
+  // burn into the header.
+  React.useEffect(() => {
+    if (saveState !== "saved") return;
+    const h = setTimeout(() => setSaveState("idle"), 1400);
+    return () => clearTimeout(h);
+  }, [saveState]);
+
+  // Two-click reset: first click arms (with a 3s decay), second click commits.
+  React.useEffect(() => {
+    if (!resetArmed) return;
+    const h = setTimeout(() => setResetArmed(false), 3000);
+    return () => clearTimeout(h);
+  }, [resetArmed]);
+  const onResetClick = () => {
+    if (!resetArmed) { setResetArmed(true); return; }
+    try { localStorage.removeItem(STATE_KEY); } catch {}
+    window.location.reload();
+  };
 
   const project = { name: PROJECT_META.shortName };
   const sLabel = SCENARIO_LABELS[scenario];
@@ -77,25 +250,42 @@ const App = () => {
         backdropFilter: "saturate(140%) blur(8px)",
         position: "sticky", top: 0, zIndex: 20,
       }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 28px" }}>
-          <Logo size={20} />
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: isMobile ? "10px 14px" : "14px 28px", gap: 8,
+        }}>
+          <Logo size={isMobile ? 18 : 20} />
+          <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10 }}>
+            <SaveIndicator state={saveState} />
             <ThemeToggle theme={theme} setTheme={setTheme} />
-            <Pill2 onClick={() => exportAll({
-              items: adjustedItems, assumptions: assumptionsEff, model, A: A_eff, irrValue,
-              scenario: sLabel.label, includeSoft, projectName: PROJECT_META.shortName,
-            })}>
-              <IconDownload size={13} /> Export
-            </Pill2>
-            {!READ_ONLY && <Pill2 onClick={() => setShareOpen(true)}>Share</Pill2>}
-            {READ_ONLY && (
+            {!isMobile && (
+              <button onClick={onResetClick}
+                title={resetArmed ? "Click again to confirm" : "Discard local edits and restore defaults"}
+                style={{
+                  border: `1px solid ${resetArmed ? "var(--red-deep)" : "var(--line)"}`,
+                  background: resetArmed ? "color-mix(in srgb, var(--red-deep) 12%, var(--surface))" : "var(--surface)",
+                  color: resetArmed ? "var(--red-deep)" : "var(--muted)",
+                  padding: "7px 12px", borderRadius: 999,
+                  fontSize: 12, cursor: "pointer", fontWeight: resetArmed ? 600 : 400,
+                }}>{resetArmed ? "Confirm reset" : "Reset"}</button>
+            )}
+            {!isMobile && (
+              <Pill2 onClick={() => exportAll({
+                items: adjustedItems, assumptions: assumptionsEff, model, A: A_eff, irrValue,
+                scenario: sLabel.label, includeSoft, projectName: PROJECT_META.shortName,
+              })}>
+                <IconDownload size={13} /> Export
+              </Pill2>
+            )}
+            {!viewOnly && <Pill2 onClick={() => setShareOpen(true)}>Share</Pill2>}
+            {(READ_ONLY || isMobile) && (
               <span style={{
                 fontSize: 11, fontFamily: "var(--mono)", color: "var(--muted)",
                 padding: "6px 10px", border: "1px solid var(--line)", borderRadius: 999,
-                background: "var(--surface-2)",
-              }}>shared snapshot · explore only</span>
+                background: "var(--surface-2)", whiteSpace: "nowrap",
+              }}>{isMobile && !READ_ONLY ? "view only" : "shared · explore only"}</span>
             )}
-            {!READ_ONLY && <Pill2 primary>Sign in</Pill2>}
+            {!viewOnly && !isMobile && <Pill2 primary>Sign in</Pill2>}
           </div>
         </div>
       </header>
@@ -103,13 +293,18 @@ const App = () => {
       <ValidationBanner />
 
       <div style={{
-        padding: "28px 28px 80px",
-        display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px",
-        gap: 20, alignItems: "start",
+        padding: isMobile ? "16px 14px 100px" : "28px 28px 80px",
+        display: "grid",
+        gridTemplateColumns: isMobile ? "1fr" : "minmax(0, 1fr) 320px",
+        gap: isMobile ? 14 : 20, alignItems: "start",
       }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 20, minWidth: 0 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 14 : 20, minWidth: 0 }}>
           {/* Top: project meta + summary */}
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 20 }}>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: isMobile ? "1fr" : "minmax(0,1fr) minmax(0,1fr)",
+            gap: isMobile ? 14 : 20,
+          }}>
             <Card2 padding={28} style={{ borderRadius: 20 }}>
               <Eyebrow2>Interactive Business Case</Eyebrow2>
               <h1 style={{
@@ -211,25 +406,90 @@ const App = () => {
             })}
           </div>
 
-          {tab === "edit"     && <EditModelPanel    items={adjustedItems} model={model} A={A_eff} includeSoft={includeSoft} onAddItem={(k) => setAddKind(k)} onRemoveItem={onRemoveItem} readOnly={READ_ONLY} />}
+          {tab === "edit"     && <EditModelPanel    items={adjustedItems} model={model} A={A_eff} includeSoft={includeSoft} onAddItem={(k) => setAddKind(k)} onRemoveItem={onRemoveItem} onEditItem={setEditingItem} readOnly={viewOnly} selectedItemId={selectedItemId} onSelectItem={setSelectedItemId} isMobile={isMobile} />}
           {tab === "timeline" && <TimelinePanel     items={adjustedItems} model={model} A={A_eff} includeSoft={includeSoft} />}
           {tab === "data"     && <DataTablesPanel   items={adjustedItems} model={model} assumptions={assumptionsEff} includeSoft={includeSoft} />}
           {tab === "summary"  && <SummaryPanel      items={adjustedItems} model={model} A={A_eff} irrValue={irrValue} project={project} assumptions={assumptionsEff} includeSoft={includeSoft} scenario={sLabel.label} />}
         </div>
 
-        <div style={{ position: "sticky", top: 76 }}>
-          <EstimatesRail
-            assumptions={assumptionsEff}
-            setAssumption={setAssumption}
-            items={adjustedItems}
-            scenario={scenario}
-          />
-        </div>
+        {/* Estimates: side rail on desktop, collapsible block at the bottom on mobile. */}
+        {!isMobile && (
+          <div style={{ position: "sticky", top: 76 }}>
+            <EstimatesRail
+              assumptions={assumptionsEff}
+              setAssumption={setAssumption}
+              items={adjustedItems}
+              scenario={scenario}
+              highlightedIds={highlightedIds}
+              selectedItemLabel={selectedItem?.name || null}
+              selectedItemColor={selectedItem?.color || null}
+              onClearSelection={() => setSelectedItemId(null)}
+              onEditAssumption={viewOnly ? null : setEditingAssumption}
+              readOnly={viewOnly}
+            />
+          </div>
+        )}
+        {isMobile && (
+          <div>
+            <button onClick={() => setEstimatesOpen(o => !o)} style={{
+              width: "100%", border: "1px solid var(--line)", background: "var(--surface)",
+              padding: "12px 14px", borderRadius: 12, cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              fontSize: 13, fontWeight: 500,
+            }}>
+              <span>Assumptions{highlightedIds.length ? ` · ${highlightedIds.length} relevant` : ` · ${assumptionsEff.length}`}</span>
+              {estimatesOpen ? <IconChevUp size={14} /> : <IconChevDown size={14} />}
+            </button>
+            {estimatesOpen && (
+              <div style={{ marginTop: 10 }}>
+                <EstimatesRail
+                  assumptions={assumptionsEff}
+                  setAssumption={setAssumption}
+                  items={adjustedItems}
+                  scenario={scenario}
+                  highlightedIds={highlightedIds}
+                  selectedItemLabel={selectedItem?.name || null}
+                  selectedItemColor={selectedItem?.color || null}
+                  onClearSelection={() => setSelectedItemId(null)}
+                  onEditAssumption={null}
+                  readOnly={true}
+                />
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {addKind && (
-        <AddItemModal kind={addKind} onClose={() => setAddKind(null)}
-          onAdd={onAddItem} existingIds={items.map(i => i.id)} />
+        <AddItemWizard
+          kind={addKind}
+          onClose={() => setAddKind(null)}
+          onAdd={onAddItem}
+          existingIds={items.map(i => i.id)}
+          assumptions={assumptionsEff}
+          categoryColors={(window.PROJECT_CONFIG && window.PROJECT_CONFIG.categoryColors) || {}}
+        />
+      )}
+      {editingItem && (
+        <AddItemWizard
+          kind={editingItem.kind}
+          editingItem={editingItem}
+          onClose={() => setEditingItem(null)}
+          onAdd={onAddItem}
+          existingIds={items.map(i => i.id).filter(id => id !== editingItem.id)}
+          assumptions={assumptionsEff}
+          categoryColors={(window.PROJECT_CONFIG && window.PROJECT_CONFIG.categoryColors) || {}}
+        />
+      )}
+      {editingAssumption && (
+        <Modal title="Edit estimate" onClose={() => setEditingAssumption(null)} width={560}>
+          <AssumptionForm
+            editing={editingAssumption}
+            existingIds={assumptionsEff.map(a => a.id).filter(id => id !== editingAssumption.id)}
+            onSave={(a) => { onSaveAssumption(a); setEditingAssumption(null); }}
+            onCancel={() => setEditingAssumption(null)}
+          />
+        </Modal>
       )}
 
       {shareOpen && (
@@ -242,6 +502,27 @@ const App = () => {
         />
       )}
     </div>
+  );
+};
+
+const SaveIndicator = ({ state }) => {
+  if (state === "idle") return null;
+  const isSaving = state === "saving";
+  return (
+    <span style={{
+      fontSize: 11, color: "var(--muted-2)", fontFamily: "var(--mono)",
+      display: "inline-flex", alignItems: "center", gap: 5,
+      padding: "4px 8px", borderRadius: 999, background: "var(--surface-2)",
+      border: "1px solid var(--line)",
+    }} title={isSaving ? "Saving local changes…" : "Saved locally"}>
+      <span style={{
+        width: 6, height: 6, borderRadius: 999,
+        background: isSaving ? "var(--c-yellow)" : "var(--green)",
+        boxShadow: isSaving ? "0 0 0 3px color-mix(in srgb, var(--c-yellow) 30%, transparent)" : "none",
+        transition: "background 200ms",
+      }} />
+      {isSaving ? "Saving" : "Saved"}
+    </span>
   );
 };
 

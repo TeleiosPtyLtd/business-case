@@ -13,6 +13,8 @@ const HoverStackedBars = ({
   yMax,
   yLabelFmt = (v) => v >= 1000 ? `$${(v/1000).toFixed(1)}M` : `$${v.toFixed(0)}k`,
   formatValue = (v) => fmtMoney(v, { precise: true }),
+  onSegmentClick,
+  selectedKey,
 }) => {
   const padL = 44, padR = 12, padT = 10, padB = 28;
   const innerW = width - padL - padR;
@@ -92,11 +94,17 @@ const HoverStackedBars = ({
                 acc += v;
                 const isTop = si === series.length - 1 ||
                   series.slice(si + 1).every(s => s.values[i] === 0);
+                const isSelected = selectedKey === ser.key;
+                const dimmed = hoverYear != null && !isHover;
                 return (
                   <rect key={ser.key} x={cx - barW/2} y={y} width={barW} height={Math.max(h, 0.5)}
                         fill={ser.color}
-                        opacity={hoverYear == null || isHover ? 1 : 0.55}
-                        rx={isTop ? 3 : 0} ry={isTop ? 3 : 0} />
+                        opacity={dimmed ? 0.55 : 1}
+                        stroke={isSelected ? "var(--ink)" : "none"}
+                        strokeWidth={isSelected ? 1.5 : 0}
+                        rx={isTop ? 3 : 0} ry={isTop ? 3 : 0}
+                        style={onSegmentClick ? { cursor: "pointer" } : undefined}
+                        onClick={onSegmentClick ? () => onSegmentClick(ser.key) : undefined} />
                 );
               })}
               <text x={cx} y={height - 8} fontSize="10"

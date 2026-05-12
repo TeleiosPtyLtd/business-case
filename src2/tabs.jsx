@@ -1,10 +1,10 @@
 // Tab panels — Edit Model, Timeline, Data Tables, Summary
 
 // ---------- EDIT MODEL ----------
-const EditModelPanel = ({ items, model, A, onAddItem, onRemoveItem, includeSoft, readOnly }) => {
-  const [openItem, setOpenItem] = React.useState(null);
+const EditModelPanel = ({ items, model, A, onAddItem, onRemoveItem, onEditItem, includeSoft, readOnly, selectedItemId, onSelectItem, isMobile }) => {
   const costs = items.filter(i => i.kind === "cost");
   const benefits = items.filter(i => i.kind === "benefit");
+  const toggle = (id) => onSelectItem(selectedItemId === id ? null : id);
 
   const yearTotals = model.yearTotals;
   const maxYear = Math.max(...yearTotals.cost, ...yearTotals.benefit, 1) * 1.05;
@@ -18,23 +18,34 @@ const EditModelPanel = ({ items, model, A, onAddItem, onRemoveItem, includeSoft,
   });
 
   return (
-    <div className="panel-fade" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, alignItems: "flex-start" }}>
-      <ChartGroup title="Costs" kind="cost" series={seriesFor("cost")} yMax={maxYear} subtitle={`${HORIZON}-year horizon`}>
+    <div className="panel-fade" style={{
+      display: "grid",
+      gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
+      gap: isMobile ? 16 : 20,
+      alignItems: "flex-start",
+    }}>
+      <ChartGroup title="Costs" kind="cost" series={seriesFor("cost")} yMax={maxYear} subtitle={`${HORIZON}-year horizon`}
+        selectedKey={selectedItemId} onSegmentClick={onSelectItem}>
         {costs.map(i => (
           <ItemRow key={i.id} item={i} A={A} series={model.perItem[i.id]}
             includeSoft={includeSoft}
-            expanded={openItem === i.id}
-            onClick={() => setOpenItem(openItem === i.id ? null : i.id)}
+            expanded={selectedItemId === i.id}
+            selected={selectedItemId === i.id}
+            onClick={() => toggle(i.id)}
+            onEdit={!readOnly && onEditItem ? () => onEditItem(i) : null}
             onRemove={!readOnly && i.removable ? () => onRemoveItem(i.id) : null} />
         ))}
         {!readOnly && <AddButton label="Add cost" onClick={() => onAddItem("cost")} />}
       </ChartGroup>
-      <ChartGroup title="Benefits" kind="benefit" series={seriesFor("benefit")} yMax={maxYear} subtitle={includeSoft ? "cash + soft" : "cash only"}>
+      <ChartGroup title="Benefits" kind="benefit" series={seriesFor("benefit")} yMax={maxYear} subtitle={includeSoft ? "cash + soft" : "cash only"}
+        selectedKey={selectedItemId} onSegmentClick={onSelectItem}>
         {benefits.map(i => (
           <ItemRow key={i.id} item={i} A={A} series={model.perItem[i.id]}
             includeSoft={includeSoft}
-            expanded={openItem === i.id}
-            onClick={() => setOpenItem(openItem === i.id ? null : i.id)}
+            expanded={selectedItemId === i.id}
+            selected={selectedItemId === i.id}
+            onClick={() => toggle(i.id)}
+            onEdit={!readOnly && onEditItem ? () => onEditItem(i) : null}
             onRemove={!readOnly && i.removable ? () => onRemoveItem(i.id) : null} />
         ))}
         {!readOnly && <AddButton label="Add benefit" onClick={() => onAddItem("benefit")} />}
@@ -43,7 +54,7 @@ const EditModelPanel = ({ items, model, A, onAddItem, onRemoveItem, includeSoft,
   );
 };
 
-const ChartGroup = ({ title, kind, series, yMax, subtitle, children }) => (
+const ChartGroup = ({ title, kind, series, yMax, subtitle, children, selectedKey, onSegmentClick }) => (
   <Card2 padding={20} style={{ borderRadius: 20 }}>
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
       <Eyebrow2>{title}</Eyebrow2>
@@ -51,6 +62,7 @@ const ChartGroup = ({ title, kind, series, yMax, subtitle, children }) => (
     </div>
     <div style={{ marginLeft: -8, marginRight: -4 }}>
       <HoverStackedBars series={series} height={220} yMax={yMax}
+        selectedKey={selectedKey} onSegmentClick={onSegmentClick}
         yLabelFmt={v => v >= 1000 ? `$${(v/1000).toFixed(1)}M` : `$${v.toFixed(0)}k`} />
     </div>
     <ColumnHeaders kind={kind} />

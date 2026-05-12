@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=1440" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CBAgent — Interactive Business Case</title>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -124,6 +124,17 @@
 
   .panel-fade { animation: fadeIn 220ms ease; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+
+  /* Mobile tweaks — the inline-style layout switches via JS (useIsMobile),
+     but a few CSS-level concerns belong here. */
+  @media (max-width: 760px) {
+    body { font-size: 13.5px; }
+    .modal-backdrop { padding: 0; align-items: flex-end; }
+    .modal-backdrop > div {
+      max-width: 100% !important; width: 100% !important;
+      border-radius: 16px 16px 0 0 !important; max-height: 92vh !important;
+    }
+  }
 </style>
 </head>
 <body data-theme="light">
