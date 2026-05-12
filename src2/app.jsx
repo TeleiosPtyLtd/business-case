@@ -86,6 +86,7 @@ const App = () => {
   const [editingItem, setEditingItem] = React.useState(null);
   const [editingAssumption, setEditingAssumption] = React.useState(null);
   const [shareOpen, setShareOpen] = React.useState(false);
+  const [share, setShare] = React.useState(() => __persisted?.share || null);
   const [selectedItemId, setSelectedItemId] = React.useState(() => __persisted?.selectedItemId || null);
   const [saveState, setSaveState] = React.useState("idle"); // idle | saving | saved
   const [resetArmed, setResetArmed] = React.useState(false);
@@ -212,13 +213,13 @@ const App = () => {
           v: 1,
           items: serialiseItems(items),
           overrides, scenario, includeSoft, theme, tab, selectedItemId,
-          customAssumptions,
+          customAssumptions, share,
         }));
         setSaveState("saved");
       } catch (e) { setSaveState("idle"); /* quota or disabled — silent */ }
     }, 200);
     return () => clearTimeout(handle);
-  }, [items, overrides, scenario, includeSoft, theme, tab, selectedItemId, customAssumptions]);
+  }, [items, overrides, scenario, includeSoft, theme, tab, selectedItemId, customAssumptions, share]);
   // Fade "saved" back to idle after a moment so the indicator doesn't
   // burn into the header.
   React.useEffect(() => {
@@ -498,6 +499,8 @@ const App = () => {
             scenario, items: adjustedItems,
             assumptionsEff, overrides, includeSoft,
           })}
+          existingShare={share}
+          onShareSaved={setShare}
           onClose={() => setShareOpen(false)}
         />
       )}
