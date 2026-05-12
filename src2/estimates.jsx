@@ -68,7 +68,7 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, sele
       <div style={{ padding: "20px 20px 16px", borderBottom: "1px solid var(--line)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 14, fontWeight: 500 }}>Estimates</span>
-          <IconHelp size={13} style={{ color: "var(--muted-2)" }} />
+          <HelpTip topic="estimates" />
           <span style={{
             marginLeft: "auto", fontSize: 11,
             color: "var(--muted-2)", fontFamily: "var(--mono)",

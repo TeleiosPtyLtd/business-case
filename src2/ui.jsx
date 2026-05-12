@@ -129,4 +129,175 @@ const SourceTag = ({ domain, source }) => (
   </div>
 );
 
-Object.assign(window, { Eyebrow2, Card2, Dot2, Toggle2, Pill2, NumberInput, Modal, SourceTag });
+// ============================================================================
+// HelpTip — small `?` icon with a portal-rendered tooltip giving a formal
+// definition and a plain-English explanation. Drop-in replacement for the
+// IconHelp glyph everywhere a concept needs unpacking for a lay reader.
+//
+//   <HelpTip topic="npv" />               // pull from registry
+//   <HelpTip title="Foo">Custom body</HelpTip>   // inline content
+// ============================================================================
+
+const HELP_TOPICS = {
+  npv: {
+    title: "Net Present Value (NPV)",
+    body: (
+      <>
+        <p style={{ margin: "0 0 8px" }}>
+          The sum of every future cash flow — costs and benefits — discounted
+          back to today's dollars.
+        </p>
+        <p style={{ margin: 0 }}>
+          In plain terms: if you'll spend money over several years and earn
+          some back, NPV asks <em>"what is all of it worth right now?"</em>.
+          Future dollars are penalised because a dollar in five years is worth
+          less than one today (inflation, opportunity cost, risk). A positive
+          NPV means the project comes out ahead after all the discounting.
+        </p>
+      </>
+    ),
+  },
+  bcr: {
+    title: "Benefit Cost Ratio (BCR)",
+    body: (
+      <>
+        <p style={{ margin: "0 0 8px" }}>
+          Total benefits divided by total costs, both expressed in
+          present-value dollars.
+        </p>
+        <p style={{ margin: 0 }}>
+          For every dollar you spend, how many come back? <strong>Above
+          1.0</strong> means you come out ahead — 3.0 means $3 returned per $1
+          spent. <strong>Below 1.0</strong> means the project doesn't pay for
+          itself, even before accounting for risk.
+        </p>
+      </>
+    ),
+  },
+  irr: {
+    title: "Internal Rate of Return (IRR)",
+    body: (
+      <>
+        <p style={{ margin: "0 0 8px" }}>
+          The discount rate at which the project's NPV would equal zero.
+        </p>
+        <p style={{ margin: 0 }}>
+          Imagine the project as a savings account: what yearly interest rate
+          would it have to pay to give you exactly these returns? Higher IRR
+          means a better project — compare it to your other options. IRR can
+          show as <em>"—"</em> when the cash-flow pattern doesn't have a
+          single unambiguous answer (e.g. it flips sign more than once over
+          the horizon).
+        </p>
+      </>
+    ),
+  },
+  estimates: {
+    title: "Estimates",
+    body: (
+      <>
+        <p style={{ margin: "0 0 8px" }}>
+          The editable input assumptions that drive every cost and benefit in
+          the model.
+        </p>
+        <p style={{ margin: 0 }}>
+          These are the numbers you can change to ask <em>"what if?"</em>. The
+          whole model — every NPV, every chart — recalculates as you nudge
+          them. Each one carries a description, a rationale, and a source so
+          you can trust or push back on where it came from. Use the{" "}
+          <strong>↕ impact</strong> toggle to rank them by how much each one
+          moves NPV.
+        </p>
+      </>
+    ),
+  },
+  soft: {
+    title: "Soft value",
+    body: (
+      <>
+        <p style={{ margin: "0 0 8px" }}>
+          Benefits that <em>don't</em> leave a budget line — freed time,
+          retained optionality, capability reuse — as opposed to cash that
+          actually arrives in a bank account.
+        </p>
+        <p style={{ margin: 0 }}>
+          Real, but harder to spend. Toggling soft value on includes these in
+          NPV; off shows the cash-only view. CFOs typically trust cash-only;
+          champions argue for cash + soft.
+        </p>
+      </>
+    ),
+  },
+};
+
+const HelpTip = ({ topic, title: titleProp, children, size = 13, color }) => {
+  const fallback = topic ? HELP_TOPICS[topic] : null;
+  const title = titleProp || fallback?.title;
+  const body  = children || fallback?.body;
+  const [open, setOpen] = React.useState(false);
+  const [pos, setPos]   = React.useState({ top: 0, left: 0, side: "top" });
+  const triggerRef      = React.useRef(null);
+
+  const place = () => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const TIP_W = 300;
+    const GAP = 8;
+    const left = Math.max(8, Math.min(window.innerWidth - TIP_W - 8, r.left + r.width / 2 - TIP_W / 2));
+    // If there isn't enough room above for the tooltip, flip below.
+    const wantsBottom = r.top < 220;
+    const top = wantsBottom ? r.bottom + GAP : r.top - GAP;
+    setPos({ top, left, side: wantsBottom ? "bottom" : "top" });
+  };
+  const show = () => { place(); setOpen(true); };
+  const hide = () => setOpen(false);
+
+  if (!title && !body) return null;
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        onMouseEnter={show}
+        onMouseLeave={hide}
+        onFocus={show}
+        onBlur={hide}
+        onClick={(e) => { e.preventDefault(); open ? hide() : show(); }}
+        aria-label={title ? `Help: ${title}` : "Help"}
+        style={{
+          background: "transparent", border: "none",
+          padding: 2, margin: 0, color: color || "var(--muted-2)",
+          cursor: "help", lineHeight: 0,
+          display: "inline-flex", alignItems: "center",
+        }}
+      ><IconHelp size={size} /></button>
+      {open && ReactDOM.createPortal(
+        <div role="tooltip" style={{
+          position: "fixed",
+          top: pos.top, left: pos.left,
+          transform: pos.side === "top" ? "translateY(-100%)" : "none",
+          width: 300, maxWidth: "calc(100vw - 16px)",
+          background: "var(--surface)",
+          border: "1px solid var(--line-strong)",
+          borderRadius: 10, padding: "12px 14px",
+          boxShadow: "0 12px 28px rgba(0,0,0,0.12)",
+          zIndex: 1000,
+          fontSize: 12.5, lineHeight: 1.55, color: "var(--ink-2)",
+          pointerEvents: "none",
+        }}>
+          {title && (
+            <div style={{
+              fontSize: 10.5, letterSpacing: "0.12em", textTransform: "uppercase",
+              color: "var(--eyebrow)", fontWeight: 500, marginBottom: 8,
+            }}>{title}</div>
+          )}
+          <div>{body}</div>
+        </div>,
+        document.body
+      )}
+    </>
+  );
+};
+
+Object.assign(window, { Eyebrow2, Card2, Dot2, Toggle2, Pill2, NumberInput, Modal, SourceTag, HelpTip, HELP_TOPICS });

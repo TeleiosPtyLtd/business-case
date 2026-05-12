@@ -367,11 +367,11 @@ const App = () => {
                   {sLabel.label} · {includeSoft ? "cash + soft value" : "cash value only"}.
                 </p>
               </div>
-              <SummaryRow label="Net Present Value (NPV)" tooltip helper={`${HORIZON}-year horizon, ${A_eff.discount_rate}% discount`}
+              <SummaryRow label="Net Present Value (NPV)" tooltip="npv" helper={`${HORIZON}-year horizon, ${A_eff.discount_rate}% discount`}
                 value={<span style={{ color: model.npv >= 0 ? "var(--green-deep)" : "var(--red-deep)" }}>{fmtMoney(model.npv, { precise: true })}</span>} />
-              <SummaryRow label="Benefit Cost Ratio (BCR)" tooltip helper="benefits ÷ costs"
+              <SummaryRow label="Benefit Cost Ratio (BCR)" tooltip="bcr" helper="benefits ÷ costs"
                 value={<span style={{ color: model.bcr >= 1 ? "var(--green-deep)" : "var(--red-deep)" }}>{model.bcr.toFixed(2)}</span>} />
-              <SummaryRow label="Internal Rate of Return" helper="annualised"
+              <SummaryRow label="Internal Rate of Return" tooltip="irr" helper="annualised"
                 value={<span>{irrValue == null ? "—" : fmtPct(irrValue)}</span>} />
               <div style={{
                 padding: "14px 24px", borderTop: "1px solid var(--line)",
@@ -584,7 +584,7 @@ const SummaryRow = ({ label, value, tooltip, helper }) => (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <span style={{ fontSize: 13.5 }}>{label}</span>
-        {tooltip && <IconHelp size={13} style={{ color: "var(--muted-2)" }} />}
+        {tooltip && <HelpTip topic={tooltip} />}
       </div>
       {helper && <div style={{ color: "var(--muted-2)", fontSize: 11, marginTop: 2, fontFamily: "var(--mono)" }}>{helper}</div>}
     </div>
