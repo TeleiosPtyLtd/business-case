@@ -178,8 +178,14 @@ const App = () => {
   const [estimatesOpen, setEstimatesOpen] = React.useState(false); // mobile collapsible
   const [resetOpen, setResetOpen] = React.useState(false);
   const [exportMenuOpen, setExportMenuOpen] = React.useState(false);
-  // On mobile we present the model as view-only, regardless of READ_ONLY.
-  const viewOnly = READ_ONLY || isMobile;
+  // Mobile gets a flat view-only presentation (no editing affordances,
+  // all rows revealed at once) — the proof walkthrough doesn't fit the
+  // narrow viewport. A shared snapshot stays fully interactive: the
+  // recipient steps through Now / And / Then / Risks just as the author
+  // did, and can override estimates locally for what-if exploration.
+  // READ_ONLY only suppresses Share / Sign in and re-keys persistence
+  // per share id; it does NOT lock the model.
+  const viewOnly = isMobile;
 
   // Merge defaults + custom assumptions. customAssumptions may shadow
   // a default by id (to edit metadata of an existing assumption);
@@ -438,7 +444,7 @@ const App = () => {
                 )}
               </div>
             )}
-            {!viewOnly && <Pill2 onClick={() => setShareOpen(true)}>Share</Pill2>}
+            {!READ_ONLY && !isMobile && <Pill2 onClick={() => setShareOpen(true)}>Share</Pill2>}
             {(READ_ONLY || isMobile) && (
               <span style={{
                 fontSize: 11, fontFamily: "var(--mono)", color: "var(--muted)",
@@ -446,7 +452,7 @@ const App = () => {
                 background: "var(--surface-2)", whiteSpace: "nowrap",
               }}>{isMobile && !READ_ONLY ? "view only" : "shared · explore only"}</span>
             )}
-            {!viewOnly && !isMobile && <Pill2 primary>Sign in</Pill2>}
+            {!READ_ONLY && !isMobile && <Pill2 primary>Sign in</Pill2>}
           </div>
         </div>
       </header>
@@ -3163,6 +3169,27 @@ const MinimalLanding = (props) => {
     }
   }, [commitmentConfirmedCount, topCommitments.length, commitmentsConfirmed, setCommitmentsConfirmed]);
 
+  // Auto-progress the gates when there's nothing to confirm on a side.
+  // The walkthrough assumes ≥1 scope-1 world fact AND ≥1 commitment, but
+  // a leanly-authored case (or a snapshot whose attribution computation
+  // surfaced nothing) can have zero of either. Without these effects the
+  // page stalls in Now — the "Let's proceed" gate never appears and the
+  // rest of the proof stays hidden behind it.
+  React.useEffect(() => {
+    if (worldProceedClicked) return;
+    if (topWorldFacts.length === 0) setWorldProceedClicked(true);
+  }, [topWorldFacts.length, worldProceedClicked, setWorldProceedClicked]);
+  React.useEffect(() => {
+    if (commitmentsConfirmed) return;
+    if (topCommitments.length > 0) return;
+    if (worldProceedClicked || topWorldFacts.length === 0) {
+      setCommitmentsConfirmed(true);
+    }
+  }, [
+    topCommitments.length, topWorldFacts.length,
+    worldProceedClicked, commitmentsConfirmed, setCommitmentsConfirmed,
+  ]);
+
   // ---- Shared breakdown helpers ------------------------------------
   // Used by the NOW baseline equation AND by the per-benefit
   // equations under "we hit the following targets" in AND. Each
@@ -3181,8 +3208,11 @@ const MinimalLanding = (props) => {
     // When the math toggle is open, the reader has opted in to the
     // full audit trail — show all real values regardless of buyer
     // acknowledgment. The Okay gating is a UX device for the buyer,
-    // not for an auditor inspecting the math.
-    if (viewOnly || commitmentsConfirmed || andShowMath) return true;
+    // not for an auditor inspecting the math. Likewise, once the buyer
+    // has clicked "Let's proceed", they've committed to the world-fact
+    // story — the resolved baseline equation should display real
+    // numbers even for factors not in the top-3 confirm rows.
+    if (viewOnly || commitmentsConfirmed || andShowMath || worldProceedClicked) return true;
     if (!f || !Array.isArray(f.ids) || f.ids.length !== 1) return true;
     return !!(confirmedAssumptions && confirmedAssumptions[f.ids[0]]);
   };
@@ -3319,8 +3349,11 @@ const MinimalLanding = (props) => {
       {/* Lead-in narrative — frames the table that follows as the
           conditional payoff of two specific commitments. The "targets"
           shown are the two commitments whose accuracy moves the
-          scope-1 result the most. */}
-      {topCommitments.length > 0 && (() => {
+          scope-1 result the most. Renders whenever EITHER side has
+          rows to walk through — a case with only world facts (no
+          commitments) still needs Now → Then; a case with only
+          commitments (no world facts) still needs And → Then. */}
+      {(topCommitments.length > 0 || topWorldFacts.length > 0) && (() => {
         // Operators bleed into the actual page margin via absolute
         // positioning — each row is `position: relative`, and the
         // operator anchors to `right: 100%` of that row (so its right
@@ -3486,11 +3519,17 @@ const MinimalLanding = (props) => {
                         // The "Let's proceed" button only attaches to
                         // the FIRST baseline equation, and only when
                         // the whole NOW input has resolved and we're
-                        // not yet past that gate.
+                        // not yet past that gate. Gated on the top-3
+                        // confirm rows, NOT on per-factor confirmation
+                        // of this particular baseline — a baseline
+                        // formula can reference assumptions outside the
+                        // top-3, which would otherwise leave the button
+                        // permanently disabled even after the buyer has
+                        // clicked through every Sounds-right row.
                         const showProceed = !viewOnly
                           && !worldProceedClicked
                           && bi === 0
-                          && allConfirmed;
+                          && allWorldConfirmed;
                         return (
                           <div key={bi}>
                             <div style={{
@@ -3608,6 +3647,64 @@ const MinimalLanding = (props) => {
                       })}
                     </div>
                   )}
+
+                  {/* Fallback proceed / edit when the case has no
+                      baseline equations. The button normally lives
+                      inside the first baseline card so it shares a row
+                      with the equation; without baselines we render a
+                      standalone block so the reader can still advance
+                      after confirming the top-3 world facts. */}
+                  {baselines.length === 0 && !viewOnly && (allWorldConfirmed || worldProceedClicked) && (
+                    <div style={{
+                      marginTop: 22, paddingTop: 18,
+                      borderTop: "1px dashed var(--line)",
+                      display: "flex", gap: 14, alignItems: "center",
+                    }}>
+                      {!worldProceedClicked && (
+                        <button
+                          type="button"
+                          onClick={() => setWorldProceedClicked && setWorldProceedClicked(true)}
+                          style={{
+                            display: "inline-flex", alignItems: "center", gap: 8,
+                            fontFamily: "var(--sans)", fontSize: 13, fontWeight: 600,
+                            letterSpacing: "0.02em",
+                            color: "#FFFFFF", background: "var(--green-deep)",
+                            border: "none", borderRadius: 999,
+                            padding: "9px 16px",
+                            cursor: "pointer",
+                            boxShadow: "0 6px 18px color-mix(in srgb, var(--green-deep) 28%, transparent)",
+                            transition: "transform 160ms ease, box-shadow 160ms ease",
+                            animation: "fadeIn 320ms var(--ease-expo)",
+                            whiteSpace: "nowrap",
+                          }}
+                          onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-1px)"; }}
+                          onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; }}
+                        >
+                          Let's proceed
+                          <IconArrowRight size={14} stroke={2.4} />
+                        </button>
+                      )}
+                      {worldProceedClicked && (
+                        <button
+                          type="button"
+                          onClick={() => setWorldProceedClicked && setWorldProceedClicked(false)}
+                          style={{
+                            background: "transparent", border: "none",
+                            padding: 0, cursor: "pointer",
+                            fontFamily: "var(--serif)", fontStyle: "italic",
+                            fontSize: 13, color: "var(--muted)",
+                            letterSpacing: "-0.005em",
+                          }}
+                          title="Re-open the world-fact editors"
+                        >
+                          <span style={{
+                            borderBottom: "1px solid var(--line-strong)",
+                            paddingBottom: 1,
+                          }}>Edit</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })()}
@@ -3616,8 +3713,11 @@ const MinimalLanding = (props) => {
                 proceed" after confirming every NOW input.
                 Commitments are our promises, not facts the buyer can
                 validate, so the per-row affordance is a soft
-                acknowledgment ("Okay") that steps to the next one. */}
-            {(viewOnly || commitmentsConfirmed || worldProceedClicked) && (() => {
+                acknowledgment ("Okay") that steps to the next one.
+                Suppressed entirely when there are no commitment rows —
+                "we commit to nothing" is not a meaningful step in the
+                proof; the page should jump straight to Then. */}
+            {topCommitments.length > 0 && (viewOnly || commitmentsConfirmed || worldProceedClicked) && (() => {
               // All commitment rows are rendered up front — no
               // sequential reveal — so clicking "Okay" only changes
               // a row's state in place rather than pushing the rest

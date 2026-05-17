@@ -32,6 +32,8 @@ const IconShield   = (p) => <Icon {...p} d={<><path d="M12 3 4 6v6c0 5 3.5 8.5 8
 const IconClock    = (p) => <Icon {...p} d={<><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>} />;
 const IconBookmark = (p) => <Icon {...p} d="M6 3h12v18l-6-4-6 4V3z" />;
 const IconDownload = (p) => <Icon {...p} d={<><path d="M12 4v12"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/></>} />;
+const IconBarsUp   = (p) => <Icon {...p} d={<><path d="M3 20h18"/><path d="M6 20v-5M12 20v-9M18 20v-13"/></>} />;
+const IconPiggy    = (p) => <Icon {...p} d={<><path d="M4 13c0-3 3-5 6-5h3c2 0 4 1 5 3l2-1v4l-1 .5c.6.6 1 1.4 1 2.5 0 1-1 2-2 2v2h-2.5v-1.2c-.8.2-1.6.2-2.5.2H9v1H7v-2c-1.8-.7-3-2-3-4z"/><circle cx="8" cy="12" r="0.7" fill="currentColor"/><path d="M9 8c0-1.5 1-3 2-3"/></>} />;
 
 // Teleios mark — verbatim path from teleios.au (the inline SVG used in the
 // site's nav). The outer shape extends past a normal circle on the right

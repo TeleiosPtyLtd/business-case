@@ -312,6 +312,12 @@ const buildSnapshot = ({ items, assumptionsEff, overrides }) => ({
     return { ...it, color: undefined, gross: grossStr };
   }),
   assumptions: assumptionsEff.map(a => ({ ...a, modified: undefined })),
+  // Baseline equations (the "These imply: revenue = proposals × win-rate
+  // × fee" block under Now) live on PROJECT_CONFIG.baseline as formula
+  // STRINGS — copy them through verbatim so the viewer can recompile.
+  // Without this the recipient sees no Now-section equation and the
+  // "Let's proceed" button falls back to its standalone placement.
+  baseline: (window.PROJECT_CONFIG && window.PROJECT_CONFIG.baseline) || [],
   overrides,
 });
 
