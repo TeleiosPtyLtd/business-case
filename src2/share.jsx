@@ -292,16 +292,11 @@ const primaryBtnStyle = (enabled) => ({
 
 // Build a self-contained snapshot of the current model. The snapshot is what
 // gets uploaded to the backend and replayed on the viewer side.
-const buildSnapshot = ({ scenario, items, assumptionsEff, overrides, includeSoft }) => ({
+const buildSnapshot = ({ items, assumptionsEff, overrides }) => ({
   version: 1,
   generatedAt: new Date().toISOString(),
   meta: window.PROJECT_META,
   horizon: window.HORIZON,
-  scenarios: window.SCENARIO_LABELS,
-  scenarioOverrides: window.SCENARIO_OVERRIDES,
-  scenarioCounterfactualShift: window.SCENARIO_COUNTERFACTUAL_SHIFT,
-  defaultScenario: scenario,
-  categoryColors: (window.PROJECT_CONFIG && window.PROJECT_CONFIG.categoryColors) || {},
   // Serialize each item with a formula STRING so the viewer can recompile.
   // Order of preference for the formula source:
   //   1. item._grossSrc  - wizard-created or rehydrated items already have this
@@ -318,7 +313,6 @@ const buildSnapshot = ({ scenario, items, assumptionsEff, overrides, includeSoft
   }),
   assumptions: assumptionsEff.map(a => ({ ...a, modified: undefined })),
   overrides,
-  includeSoft,
 });
 
 Object.assign(window, { ShareModal, buildSnapshot });

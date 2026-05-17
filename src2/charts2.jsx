@@ -15,6 +15,8 @@ const HoverStackedBars = ({
   formatValue = (v) => fmtMoney(v, { precise: true }),
   onSegmentClick,
   selectedKey,
+  hoveredKey,
+  onSegmentHover,
 }) => {
   const padL = 44, padR = 12, padT = 10, padB = 28;
   const innerW = width - padL - padR;
@@ -60,19 +62,27 @@ const HoverStackedBars = ({
       <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} role="img"
            preserveAspectRatio="none"
            style={{ display: "block" }}>
-        {/* Y axis ticks + grid */}
+        {/* Y axis ticks + grid — solid baseline, dashed intermediate grids */}
         {Array.from({ length: ticks }).map((_, i) => {
           const v = tickStep * i;
           const y = padT + innerH - (v / max) * innerH;
+          const isBaseline = i === 0;
           return (
             <g key={i}>
               <line x1={padL} x2={width - padR} y1={y} y2={y}
-                    stroke={i === 0 ? "var(--line-strong)" : "var(--line)"} strokeWidth="1" />
-              <text x={padL - 8} y={y + 3} fontSize="10" fill="var(--muted-2)" textAnchor="end"
-                    fontFamily="var(--mono)">{yLabelFmt(v / 1000)}</text>
+                    stroke={isBaseline ? "var(--ink-2)" : "var(--line)"}
+                    strokeWidth={isBaseline ? 1.25 : 1}
+                    strokeDasharray={isBaseline ? undefined : "1 4"}
+                    shapeRendering="crispEdges" />
+              <text x={padL - 8} y={y + 3} fontSize="11" fill="var(--muted-2)" textAnchor="end"
+                    fontFamily="var(--serif)" fontStyle="italic">{yLabelFmt(v / 1000)}</text>
             </g>
           );
         })}
+        {/* Left vertical axis rule */}
+        <line x1={padL} x2={padL} y1={padT} y2={padT + innerH}
+              stroke="var(--ink-2)" strokeWidth="1.25"
+              shapeRendering="crispEdges" />
 
         {/* Bars + hover-column highlight */}
         {Array.from({ length: N }).map((_, i) => {
@@ -86,32 +96,109 @@ const HoverStackedBars = ({
                 <rect x={x0} y={padT} width={slot} height={innerH}
                       fill="var(--ink)" opacity="0.04" />
               )}
+              {/* Visible bar segments — pointer-events off so the wider
+                  hit-zone overlays below catch hover/click. */}
               {series.map((ser, si) => {
                 const v = ser.values[i];
                 if (v <= 0) return null;
                 const h = (v / max) * innerH;
                 const y = padT + innerH - ((acc + v) / max) * innerH;
                 acc += v;
-                const isTop = si === series.length - 1 ||
-                  series.slice(si + 1).every(s => s.values[i] === 0);
                 const isSelected = selectedKey === ser.key;
                 const dimmed = hoverYear != null && !isHover;
+                const isHoveredRow = hoveredKey === ser.key;
+                const strokeColor = isSelected
+                  ? "var(--ink)"
+                  : isHoveredRow
+                    ? ser.color
+                    : "var(--ink-2)";
+                const strokeWidth = isSelected ? 1.5 : isHoveredRow ? 1.5 : 1;
                 return (
                   <rect key={ser.key} x={cx - barW/2} y={y} width={barW} height={Math.max(h, 0.5)}
                         fill={ser.color}
-                        opacity={dimmed ? 0.55 : 1}
-                        stroke={isSelected ? "var(--ink)" : "none"}
-                        strokeWidth={isSelected ? 1.5 : 0}
-                        rx={isTop ? 3 : 0} ry={isTop ? 3 : 0}
-                        style={onSegmentClick ? { cursor: "pointer" } : undefined}
-                        onClick={onSegmentClick ? () => onSegmentClick(ser.key) : undefined} />
+                        fillOpacity={dimmed && !isHoveredRow ? 0.06 : (isHoveredRow ? 0.28 : 0.14)}
+                        stroke={strokeColor}
+                        strokeWidth={strokeWidth}
+                        strokeOpacity={dimmed && !isHoveredRow ? 0.4 : 1}
+                        shapeRendering="crispEdges"
+                        pointerEvents="none" />
                 );
               })}
-              <text x={cx} y={height - 8} fontSize="10"
+              {/* Wide invisible hit zones — full slot width so the user
+                  doesn't have to land precisely on the narrow visible bar. */}
+              {(() => {
+                let hitAcc = 0;
+                return series.map((ser) => {
+                  const v = ser.values[i];
+                  if (v <= 0) return null;
+                  const h = (v / max) * innerH;
+                  const y = padT + innerH - ((hitAcc + v) / max) * innerH;
+                  hitAcc += v;
+                  return (
+                    <rect key={`hit-${ser.key}`}
+                          x={x0} y={y} width={slot} height={Math.max(h, 0.5)}
+                          fill="transparent"
+                          onMouseEnter={onSegmentHover ? () => onSegmentHover(ser.key) : undefined}
+                          onMouseLeave={onSegmentHover ? () => onSegmentHover(null)     : undefined}
+                          onClick={onSegmentClick ? () => onSegmentClick(ser.key) : undefined}
+                          style={onSegmentClick ? { cursor: "pointer" } : undefined} />
+                  );
+                });
+              })()}
+              <text x={cx} y={height - 8} fontSize="11"
                     fill={isHover ? "var(--ink)" : "var(--muted-2)"}
-                    fontWeight={isHover ? 600 : 400}
+                    fontFamily="var(--serif)"
+                    fontWeight={isHover ? 500 : 400}
                     textAnchor="middle">
                 Year {i + 1}
+              </text>
+            </g>
+          );
+        })}
+
+        {/* Labels: faint per-segment values inside each block, and a total
+            above each stack. Per-segment labels skipped when the segment
+            is too short to fit text without overlapping its neighbour. */}
+        {Array.from({ length: N }).map((_, i) => {
+          const cx = padL + slot * i + slot / 2;
+          const total = totals[i];
+          if (total <= 0) return null;
+          const isHover = hoverYear === i;
+          const dimmed = hoverYear != null && !isHover;
+          const fmt = v => v >= 1_000_000
+            ? `$${(v / 1_000_000).toFixed(1)}M`
+            : v >= 1000
+              ? `$${Math.round(v / 1000)}k`
+              : `$${Math.round(v)}`;
+          let acc = 0;
+          const SEG_MIN_H = 14;
+          const segLabels = series.map(ser => {
+            const v = ser.values[i];
+            if (v <= 0) return null;
+            const h = (v / max) * innerH;
+            const yMid = padT + innerH - ((acc + v / 2) / max) * innerH;
+            acc += v;
+            if (h < SEG_MIN_H) return null;
+            return (
+              <text key={ser.key} x={cx} y={yMid + 3.5}
+                    fontSize="10" textAnchor="middle"
+                    fill="var(--ink)" fillOpacity={dimmed ? 0.18 : 0.5}
+                    fontFamily="var(--mono)"
+                    pointerEvents="none">
+                {fmt(v)}
+              </text>
+            );
+          });
+          const yTotalTop = padT + innerH - (total / max) * innerH;
+          return (
+            <g key={`labels-${i}`}>
+              {segLabels}
+              <text x={cx} y={yTotalTop - 5}
+                    fontSize="10.5" textAnchor="middle"
+                    fill="var(--ink-2)" fillOpacity={dimmed ? 0.35 : 0.9}
+                    fontFamily="var(--mono)" fontWeight={500}
+                    pointerEvents="none">
+                {fmt(total)}
               </text>
             </g>
           );

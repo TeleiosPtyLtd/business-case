@@ -7,7 +7,7 @@
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
 <style>
   :root, [data-theme="light"] {
@@ -81,18 +81,39 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
   body {
-    font-family: var(--sans, "Geist", ui-sans-serif, sans-serif);
+    font-family: var(--sans, "Hanken Grotesk", ui-sans-serif, sans-serif);
     background: var(--bg);
     color: var(--ink);
     font-size: 14px; line-height: 1.45;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
     transition: background 240ms ease, color 240ms ease;
+    /* The landing page's IF / AND / THEN operators bleed into the page
+       margin via absolute positioning; without this, very narrow
+       viewports would show a horizontal scrollbar. */
+    overflow-x: hidden;
+  }
+  /* Page-wide 50% desaturation lives on an inner wrapper so an overlay
+     sibling (the world-confirm carousel) can keep full colour while the
+     page behind it can be desaturated further to greyscale during the
+     intro animation. */
+  .page-shell {
+    filter: saturate(0.5);
+    transition: filter 320ms var(--ease-quint);
+  }
+  .page-shell.is-greyscale {
+    filter: grayscale(1) saturate(0);
   }
   :root {
     --serif: "Newsreader", ui-serif, Georgia, serif;
-    --sans: "Geist", ui-sans-serif, sans-serif;
-    --mono: "Geist Mono", ui-monospace, monospace;
+    --sans: "Hanken Grotesk", ui-sans-serif, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+
+    /* Motion vocabulary — three exponential ease-outs assigned by
+       purpose. Avoid one-curve-everywhere. No bounce or elastic. */
+    --ease-quart: cubic-bezier(0.25, 1, 0.5, 1);   /* micro-interactions (hover, focus) */
+    --ease-quint: cubic-bezier(0.22, 1, 0.36, 1);  /* state transitions (toggle reveals, accent flips) */
+    --ease-expo:  cubic-bezier(0.16, 1, 0.3, 1);   /* entrances (fade-ins, modal opens, big reveals) */
   }
 
   button { font: inherit; color: inherit; cursor: pointer; }
@@ -142,10 +163,23 @@
      @page sets A4 with a generous executive margin. */
   .print-only { display: none; }
   @media print {
-    @page { size: A4; margin: 16mm; }
+    @page {
+      size: A4;
+      margin: 22mm 16mm 18mm;
+      @bottom-right {
+        content: counter(page) " / " counter(pages);
+        /* System mono in print to avoid a webfont fetch in the
+           print-rendering path; Menlo / Consolas match well enough. */
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 8pt;
+        color: #948E7A;
+      }
+    }
     html, body {
       background: #FFFFFF !important; color: #14130F !important;
       font-size: 10.5pt; line-height: 1.5;
+      /* Strip global desaturation in print output. */
+      filter: none !important;
     }
     body::before { display: none !important; }
     .no-print, .modal-backdrop { display: none !important; }
@@ -164,6 +198,10 @@
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+<!-- xlsx-js-style — SheetJS fork with styling support (cell colors, fills,
+     borders, number formats, named ranges, frozen panes). Needed by the
+     Excel export so the workbook follows accountant conventions out of the box. -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 
 <script src="share.config.js"></script>
 <script type="text/babel" src="src/icons.jsx"></script>
@@ -172,10 +210,10 @@
 <script type="text/babel" src="src2/model.jsx"></script>
 <script type="text/babel" src="src2/charts2.jsx"></script>
 <script type="text/babel" src="src2/export.jsx"></script>
+<script type="text/babel" src="src2/exportXlsx.jsx"></script>
 <script type="text/babel" src="src2/ui.jsx"></script>
 <script type="text/babel" src="src2/estimates.jsx"></script>
 <script type="text/babel" src="src2/items.jsx"></script>
-<script type="text/babel" src="src2/tabs.jsx"></script>
 <script type="text/babel" src="src2/share.jsx"></script>
 <script type="text/babel" src="src2/app.jsx"></script>
 </body>

@@ -111,23 +111,9 @@ const Modal = ({ title, onClose, children, width = 520 }) => (
   </div>
 );
 
-const SourceTag = ({ domain, source }) => (
-  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-    <span style={{
-      width: 14, height: 14, borderRadius: 3,
-      background: domain === "internal"
-        ? "var(--bg-soft)"
-        : "linear-gradient(135deg, #FF7A00, #FFC15B)",
-      border: "1px solid var(--line)",
-      display: "inline-flex", alignItems: "center", justifyContent: "center",
-      fontSize: 8, color: "white", fontWeight: 700,
-    }}>{(domain || "?")[0].toUpperCase()}</span>
-    <span style={{ fontSize: 11, color: "var(--muted)" }}>
-      <span style={{ fontFamily: "var(--mono)" }}>{domain}</span>
-      {source && <> · {source}</>}
-    </span>
-  </div>
-);
+const SourceTag = ({ source }) => source ? (
+  <div style={{ fontSize: 11, color: "var(--muted)" }}>{source}</div>
+) : null;
 
 // ============================================================================
 // HelpTip — small `?` icon with a portal-rendered tooltip giving a formal

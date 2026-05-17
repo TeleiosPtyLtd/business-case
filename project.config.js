@@ -7,16 +7,16 @@
 //
 // Shape:
 //   meta             — page title, short name, description
-//   horizon          — display + PV horizon (years)
-//   defaultScenario  — id of the scenario shown on first load
-//   scenarios        — { id: { label, desc, overrides, counterfactualShift, itemOverrides } }
-//   categoryColors   — category id → CSS colour variable
-//   assumptions      — list of editable variables (numbers + metadata)
-//   items            — list of costs and benefits, with formula strings
+//   horizon          — analysis window, in years
+//   baseline         — implied current-state expressions (drives the NOW section)
+//   risks            — bare-titles disclosure (locus + threatens an assumption id)
+//   assumptions      — every numeric input; commitments vs. world facts
+//   items            — costs and benefits, each a formula over assumptions
 //
 // FORMULA STRINGS
 // ---------------
-// `gross` is a JavaScript expression as a string. It can reference:
+// `gross` and `baseline[].formula` are JavaScript expressions as strings.
+// They can reference:
 //   - any assumption id defined below
 //   - the standard math helpers: pow, min, max, abs, floor, ceil, round,
 //                                 log, sqrt, exp, PI, E
@@ -29,158 +29,112 @@
 // =============================================================================
 
 window.PROJECT_CONFIG = {
-
-  // -------------------------------------------------------------------------
-  // META — replace these
-  // -------------------------------------------------------------------------
   meta: {
-    name:        "Your project name",
-    shortName:   "Project",
-    description: "One paragraph describing the decision being modelled and what is being chosen between.",
-    eyebrow:     "Interactive Business Case",
+    name: "Your project name",
+    shortName: "Your project",
+    description:
+      "Replace with one paragraph that frames the decision: the counterfactual " +
+      "(what happens if we don't do this — the cheapest credible alternative), " +
+      "the audience (who reads this page), the time horizon (and why), who pays " +
+      "vs. who captures the benefit, and what saying 'yes' actually unlocks.",
   },
 
-  // -------------------------------------------------------------------------
-  // HORIZON — years over which the model evaluates costs and benefits
-  // -------------------------------------------------------------------------
-  horizon: 5,
+  horizon: 3,
 
-  // -------------------------------------------------------------------------
-  // SCENARIOS
-  //   overrides            — assumption_id → number (replaces default value)
-  //   counterfactualShift  — added to every item's `counterfactual` factor
-  //   itemOverrides        — per-item parameter patches for this scenario
-  // -------------------------------------------------------------------------
-  defaultScenario: "central",
-  scenarios: {
-    central: {
-      label: "Central case",
-      desc:  "Best-estimate parameters",
-      overrides: {},
-      counterfactualShift: 0,
+  // Implied current-state expressions, rendered under NOW once the buyer has
+  // confirmed the world-fact assumptions. `kind: "revenue"` makes this entry
+  // the denominator for the "% change to your annual revenue" subtotal in AND.
+  baseline: [
+    {
+      label: "Your annual revenue today",
+      formula: "annual_customers * average_order_value",
+      unit: "$/yr",
+      kind: "revenue",
     },
-    conservative: {
-      label: "Conservative",
-      desc:  "Steelman: tighter delivery, more would-have-happened-anyway",
-      overrides: {
-        // example: discount_rate: 10,
-      },
-      counterfactualShift: 0.15,
-    },
-    optimistic: {
-      label: "Optimistic",
-      desc:  "Upside: stronger delivery and fuller capture",
-      overrides: {
-        // example: discount_rate: 7,
-      },
-      counterfactualShift: -0.10,
-    },
-  },
+  ],
 
-  // -------------------------------------------------------------------------
-  // CATEGORY COLOURS — pick from the existing palette
-  //   benefits: --c-mint, --c-blue, --c-green, --c-purple, --c-mintlight
-  //   costs:    --c-red, --c-yellow, --c-orange
-  // -------------------------------------------------------------------------
-  categoryColors: {
-    benefit_a: "var(--c-mint)",
-    benefit_b: "var(--c-blue)",
-    cost_init: "var(--c-red)",
-    cost_run:  "var(--c-yellow)",
-  },
+  // Three to five plain-language statements of what could go wrong. Locus is
+  // either "commitment" (the implementer is accountable) or "world" (the world
+  // or the buyer could introduce it). `threatens` points at the assumption id
+  // the risk would falsify; the page filters risks to those relevant to scope-1.
+  risks: [
+    {
+      title: "Replace with one specific thing that could go wrong, in plain language.",
+      locus: "commitment",
+      threatens: "commitment_assumption_id",
+    },
+  ],
 
-  // -------------------------------------------------------------------------
-  // ASSUMPTIONS — editable inputs in the right rail
+  // ---------------------------------------------------------------------------
+  // Assumptions
+  // ---------------------------------------------------------------------------
+  // `controllable: true`  → commitment (target the intervention moves)
+  // `controllable: false` → world fact (the buyer confirms; the intervention
+  //                          doesn't change it)
   //
-  // Required fields: id, label, group, value, unit, description, rationale.
-  // For phase-based delivery risk, use the conventional ids p1_prob..p4_prob
-  // (values in 0..100). The engine will apply cumulative phase probability
-  // to any item with `phase` > 0.
-  // -------------------------------------------------------------------------
+  // Every assumption needs: source, description, sensitivityRange (multipliers
+  // on `value`).
+  // ---------------------------------------------------------------------------
   assumptions: [
-    // ----- Engagement -----
-    { id: "initial_investment", label: "Initial investment", value: 100000, unit: "$", group: "Engagement",
-      icon: "IconDollar", step: 5000, domain: "internal", source: "Replace with attribution",
-      description: "One-off price paid in year 1 to deliver the work.",
-      rationale: "Replace with the modelling justification for this number." },
+    // ---- World facts (buyer confirms these in NOW) --------------------------
+    { id: "annual_customers", label: "Customers per year",
+      value: 100, unit: "/yr", step: 10, group: "Business shape", icon: "IconUsers",
+      source: "Replace with your source.",
+      description: "Number of distinct customers your business serves in a year.",
+      sensitivityRange: { lo: 0.5, hi: 2.0 } },
 
-    { id: "annual_run_cost", label: "Annual run cost", value: 20000, unit: "$/yr", group: "Engagement",
-      icon: "IconClock", step: 1000, domain: "internal", source: "Replace with attribution",
-      description: "Ongoing yearly cost after go-live (hosting, support, maintenance).",
-      rationale: "Replace with the modelling justification." },
+    { id: "average_order_value", label: "Average order value",
+      value: 1000, unit: "$", step: 100, group: "Business shape", icon: "IconDollar",
+      source: "Replace with your source.",
+      description: "Typical revenue per customer engagement.",
+      sensitivityRange: { lo: 0.6, hi: 1.8 } },
 
-    // ----- Financial -----
-    { id: "discount_rate", label: "Discount rate", value: 8, unit: "%", group: "Financial",
-      icon: "IconPercent", step: 0.5, domain: "internal", source: "Replace with attribution",
-      description: "Annual rate used to discount future cash flows back to present value.",
-      rationale: "Replace with the modelling justification." },
+    // ---- Commitments (the intervention moves these — AND step) --------------
+    { id: "commitment_assumption_id", label: "Commitment example",
+      value: 10, unit: "%", step: 1, group: "Intervention", icon: "IconTrend",
+      controllable: true,
+      source: "Replace with your source.",
+      description: "Replace with the target outcome the intervention promises to deliver.",
+      sensitivityRange: { lo: 0.3, hi: 2.0 } },
 
-    // ----- Operations -----
-    { id: "annual_benefit", label: "Annual cash benefit", value: 80000, unit: "$/yr", group: "Operations",
-      icon: "IconTrend", step: 5000, domain: "internal", source: "Replace with attribution",
-      description: "Cash savings or revenue uplift the project is expected to generate each year, once live.",
-      rationale: "Replace with the modelling justification.",
-      sensitivityRange: { lo: 0.5, hi: 1.5 } },
-
-    // ----- Delivery confidence -----
-    { id: "p1_prob", label: "Phase 1 delivery", value: 80, unit: "%", group: "Delivery Confidence",
-      icon: "IconShield", step: 5, domain: "internal", source: "Risk review",
-      description: "Likelihood that Phase 1 delivers fully as scoped. Sets the baseline for everything downstream.",
-      rationale: "Replace with the modelling justification." },
-
-    { id: "p2_prob", label: "Phase 2 delivery", value: 60, unit: "%", group: "Delivery Confidence",
-      icon: "IconShield", step: 5, domain: "internal", source: "Risk review",
-      description: "Likelihood Phase 2 delivers and is adopted. Conditional on Phase 1.",
-      rationale: "Replace with the modelling justification." },
+    // ---- Financial ----------------------------------------------------------
+    { id: "discount_rate", label: "Discount rate",
+      value: 0, unit: "%", step: 0.5, group: "Financial", icon: "IconPercent",
+      source: "Default 0% — set above zero to bring future cashflows to present.",
+      description: "Annual discount rate for the present-value calculation. " +
+                   "Start at 0% if you want the buyer to read undiscounted; " +
+                   "adjust to match the buyer's cost of capital if it matters.",
+      sensitivityRange: { lo: 0.75, hi: 1.5 } },
   ],
 
-  // -------------------------------------------------------------------------
-  // ITEMS — costs and benefits.
+  // ---------------------------------------------------------------------------
+  // Items — costs and benefits
+  // ---------------------------------------------------------------------------
+  // `gross` evaluates to a $/yr value (or a one-off $ when `lump: true`).
   //
-  // Each item:
-  //   id, name, kind ("cost" | "benefit"), category (a key in categoryColors)
-  //   lump:           true → one-off in startYear; false → annuity over horizon
-  //   startYear:      1-indexed year the cashflow begins
-  //   phase:          0..4. Costs use phase 0. Cumulative phase probability
-  //                   is applied to benefits with phase > 0.
-  //   gross:          formula string (see top of file)
-  //   overlap:        0..1, fraction already counted by other initiatives
-  //   counterfactual: 0..1, fraction captured without this work
-  //   cashRealisation: 0..1, fraction realised as cash (vs soft / freed time)
-  //   horizonOverride: optional assumption id capping annuity duration
-  //   desc:           1-2 sentence drill-down narrative
-  //   uses:           assumption ids that drive this formula (UI badges)
-  // -------------------------------------------------------------------------
+  // Benefits:
+  //   • scope: 1 — primary, directly attributable, easily measurable
+  //   • scope: 2 — adjacent, secondary
+  //   • scope: 3 — downstream, strategic
+  //   • benefitKind: "revenue_uplift" | "cost_saving" | "qualitative"
+  //     Qualitative items use gross: "0".
+  //
+  // Costs have no scope. Use `lump: true` for one-off costs.
+  // ---------------------------------------------------------------------------
   items: [
-    // ----- Costs -----
-    { id: "cost_initial", name: "Initial investment", kind: "cost", category: "cost_init",
-      lump: true, startYear: 1, phase: 0,
-      gross: "initial_investment",
-      overlap: 0, counterfactual: 0, cashRealisation: 1.0,
-      desc: "One-off engagement fee paid in year 1.",
-      uses: ["initial_investment"] },
+    // Costs
+    { id: "cost_implementation", name: "Replace with what you spend money on", kind: "cost",
+      lump: true, startYear: 1,
+      gross: "0",
+      desc: "Replace with a 1–2 sentence value-chain: what triggers this cost and what's paid for.",
+      uses: [] },
 
-    { id: "cost_runtime", name: "Annual run cost", kind: "cost", category: "cost_run",
-      lump: false, startYear: 1, phase: 0,
-      gross: "annual_run_cost",
-      overlap: 0, counterfactual: 0, cashRealisation: 1.0,
-      desc: "Ongoing yearly run cost across the horizon.",
-      uses: ["annual_run_cost"] },
-
-    // ----- Benefits -----
-    { id: "benefit_primary", name: "Primary benefit", kind: "benefit", category: "benefit_a",
-      lump: false, startYear: 2, phase: 1,
-      gross: "annual_benefit",
-      overlap: 0.0, counterfactual: 0.10, cashRealisation: 1.0,
-      desc: "Replace with a description of the primary cash benefit.",
-      uses: ["annual_benefit", "p1_prob"] },
-
-    { id: "benefit_secondary", name: "Secondary benefit", kind: "benefit", category: "benefit_b",
-      lump: false, startYear: 2, phase: 2,
-      gross: "annual_benefit * 0.4",
-      overlap: 0.10, counterfactual: 0.20, cashRealisation: 0.5,
-      desc: "Replace with a description of the secondary benefit (e.g. freed staff time, optionality, or partial uplift).",
-      uses: ["annual_benefit", "p2_prob"] },
+    // Benefits
+    { id: "benefit_primary", name: "Replace with what the buyer gains",
+      kind: "benefit", scope: 1, benefitKind: "revenue_uplift",
+      lump: false, startYear: 1,
+      gross: "annual_customers * average_order_value * (commitment_assumption_id / 100)",
+      desc: "Replace with the value chain: project action → world change → $ → who captures.",
+      uses: ["annual_customers", "average_order_value", "commitment_assumption_id"] },
   ],
-
 };

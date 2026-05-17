@@ -5,7 +5,13 @@ const IconMap = {
   IconBuilding, IconClock, IconShield,
 };
 
-const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, hoveredIds, selectedItemLabel, selectedItemColor, hoveredItemColor, onClearSelection, onEditAssumption, readOnly, sortBySensitivity, onToggleSort, includeSoft, scenario }) => {
+const EstimatesRail = ({ assumptions: assumptionsAll, setAssumption, items, highlightedIds, hoveredIds, selectedItemLabel, selectedItemColor, hoveredItemColor, onClearSelection, onEditAssumption, readOnly, sortBySensitivity, onToggleSort, visibleAssumptionIds }) => {
+  // Optional progressive-disclosure filter — only show assumptions used by
+  // currently-visible items. discount_rate is always passed through.
+  const assumptions = React.useMemo(() => {
+    if (!visibleAssumptionIds || !(visibleAssumptionIds instanceof Set)) return assumptionsAll;
+    return assumptionsAll.filter(a => visibleAssumptionIds.has(a.id));
+  }, [assumptionsAll, visibleAssumptionIds]);
   const [expanded, setExpanded] = React.useState(null);
   const [query, setQuery] = React.useState("");
   const scrollRef = React.useRef(null);
@@ -15,17 +21,17 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, hove
   const hasHighlight = highlightSet.size > 0;
 
   // Stable sort: capture the impact ranking once when sort is toggled on,
-  // and refresh only when structurally relevant inputs change — scenario,
-  // soft-value flag, items membership, assumption membership. Value edits
-  // on existing assumptions are deliberately NOT a trigger, so cards
-  // don't reshuffle while the user is dragging a slider.
+  // and refresh only when structurally relevant inputs change — soft-value
+  // flag, items membership, assumption membership. Value edits on existing
+  // assumptions are deliberately NOT a trigger, so cards don't reshuffle
+  // while the user is dragging a slider.
   // Lazy init so a page that hydrates with sortBySensitivity already true
   // doesn't render a null frozenOrder for one frame.
   const [frozenOrder, setFrozenOrder] = React.useState(() => {
     if (!sortBySensitivity) return null;
     const A = {};
     for (const a of assumptions) A[a.id] = a.value;
-    return computeSensitivity(items, A, assumptions, { includeSoft: !!includeSoft }).map(s => s.id);
+    return computeSensitivity(items, A, assumptions).map(s => s.id);
   });
   const itemsKey       = React.useMemo(() => items.map(i => i.id).join("|"),       [items]);
   const assumptionsKey = React.useMemo(() => assumptions.map(a => a.id).join("|"), [assumptions]);
@@ -34,11 +40,11 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, hove
     if (!sortBySensitivity) { setFrozenOrder(null); return; }
     const A = {};
     for (const a of assumptions) A[a.id] = a.value;
-    const sens = computeSensitivity(items, A, assumptions, { includeSoft: !!includeSoft });
+    const sens = computeSensitivity(items, A, assumptions);
     setFrozenOrder(sens.map(s => s.id));
     // Intentionally excludes `assumptions`/`items` object refs — only the
     // membership keys participate.
-  }, [sortBySensitivity, includeSoft, scenario, itemsKey, assumptionsKey]); // eslint-disable-line
+  }, [sortBySensitivity, itemsKey, assumptionsKey]); // eslint-disable-line
 
   // Filter by case-insensitive match on id, label, group, description
   const q = query.trim().toLowerCase();
@@ -74,8 +80,8 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, hove
   // Refs per visible card. After every render we measure each card's new
   // position; if it differs from the previously-recorded position, we
   // apply an inverse transform and then animate it back to identity. This
-  // makes reorders (selecting an item, toggling sort, includeSoft flips,
-  // search filter changes) feel like the cards are gliding into place.
+  // makes reorders (selecting an item, toggling sort, search filter
+  // changes) feel like the cards are gliding into place.
   const cardRefs = React.useRef({});
   const prevRects = React.useRef({});
   React.useLayoutEffect(() => {
@@ -95,7 +101,7 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, hove
         // eslint-disable-next-line no-unused-expressions
         el.getBoundingClientRect(); // force reflow
         requestAnimationFrame(() => {
-          el.style.transition = "transform 280ms cubic-bezier(0.22, 1, 0.36, 1)";
+          el.style.transition = "transform 280ms var(--ease-quint)";
           el.style.transform  = "";
         });
       }
@@ -138,24 +144,9 @@ const EstimatesRail = ({ assumptions, setAssumption, items, highlightedIds, hove
             marginLeft: "auto", fontSize: 11,
             color: "var(--muted-2)", fontFamily: "var(--mono)",
           }}>{assumptions.length} variables</span>
-          {onToggleSort && (
-            <button onClick={onToggleSort}
-              title={sortBySensitivity
-                ? "Currently sorted by impact — click to restore groups"
-                : "Sort by the size of each estimate's effect on NPV"}
-              style={{
-                border: `1px solid ${sortBySensitivity ? "var(--ink)" : "var(--line)"}`,
-                background: sortBySensitivity ? "var(--ink)" : "var(--surface-2)",
-                color: sortBySensitivity ? "var(--bg)" : "var(--muted)",
-                padding: "3px 9px", borderRadius: 999,
-                fontSize: 11,
-                cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4,
-                whiteSpace: "nowrap",
-              }}>Sort by impact</button>
-          )}
         </div>
         <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--muted)" }}>
-          Editable inputs that drive every cost and benefit. Click a row for context.
+          Ranked by impact on NPV. Expand a Scope to see the estimates that drive it.
         </div>
         <input type="text" value={query} onChange={e => setQuery(e.target.value)}
           placeholder="Search estimates…"
@@ -320,14 +311,8 @@ const EstimateCard = ({ a, expanded, onToggle, onChange, accent, onEdit, readOnl
               {a.description}
             </div>
           )}
-          <div style={{ color: "var(--muted)", fontSize: 11.5, lineHeight: 1.5,
-                        paddingTop: 8, borderTop: "1px dashed var(--line)" }}>
-            <span style={{ fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase",
-                           color: "var(--eyebrow)", display: "block", marginBottom: 4 }}>Rationale</span>
-            {a.rationale}
-          </div>
           <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--line)" }}>
-            <SourceTag domain={a.domain} source={a.source} />
+            <SourceTag source={a.source} />
           </div>
         </div>
       )}

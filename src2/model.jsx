@@ -109,7 +109,6 @@ function validateConfig(cfg) {
 
   const assumptions = cfg.assumptions || [];
   const items       = cfg.items || [];
-  const cats        = cfg.categoryColors || {};
 
   // Assumptions
   const seenAss = new Set();
@@ -124,7 +123,6 @@ function validateConfig(cfg) {
       errors.push(`assumption ${a.id}: probability must be in 0..100, got ${a.value}`);
     }
     if (!a.description) warnings.push(`assumption ${a.id}: missing description`);
-    if (!a.rationale)   warnings.push(`assumption ${a.id}: missing rationale`);
   }
 
   // Items
@@ -139,18 +137,6 @@ function validateConfig(cfg) {
       errors.push(`item ${it.id}: kind must be 'cost' or 'benefit'`);
     } else if (it.kind === "cost") nCost++; else nBenefit++;
 
-    if (it.category && !(it.category in cats)) {
-      errors.push(`item ${it.id}: category '${it.category}' has no entry in categoryColors`);
-    }
-    for (const f of ["overlap", "counterfactual", "cashRealisation"]) {
-      const v = it[f];
-      if (v != null && (v < 0 || v > 1)) {
-        errors.push(`item ${it.id}: ${f} must be 0..1, got ${v}`);
-      }
-    }
-    if (it.phase != null && (it.phase < 0 || it.phase > 4 || !Number.isInteger(it.phase))) {
-      errors.push(`item ${it.id}: phase must be an integer 0..4`);
-    }
     if (it.startYear != null && (it.startYear < 1 || it.startYear > HORIZON)) {
       warnings.push(`item ${it.id}: startYear ${it.startYear} is outside 1..${HORIZON}`);
     }
@@ -167,31 +153,14 @@ function validateConfig(cfg) {
     if (nBenefit === 0) warnings.push("no benefits defined");
   }
 
-  // Scenarios
-  for (const [sid, s] of Object.entries(cfg.scenarios || {})) {
-    for (const ovId of Object.keys(s.overrides || {})) {
-      if (!seenAss.has(ovId)) errors.push(`scenario '${sid}': overrides unknown assumption '${ovId}'`);
-    }
-    for (const [iid, patch] of Object.entries(s.itemOverrides || {})) {
-      if (!seenItem.has(iid)) errors.push(`scenario '${sid}': itemOverrides unknown item '${iid}'`);
-      for (const f of ["overlap", "counterfactual", "cashRealisation"]) {
-        const v = patch && patch[f];
-        if (v != null && (v < 0 || v > 1)) {
-          errors.push(`scenario '${sid}' itemOverrides.${iid}.${f}: must be 0..1, got ${v}`);
-        }
-      }
-    }
-  }
-
   return { errors, warnings };
 }
 
 // =========================================================================
-// LOAD ASSUMPTIONS, ITEMS, SCENARIOS FROM CONFIG
+// LOAD ASSUMPTIONS AND ITEMS FROM CONFIG
 // =========================================================================
 const DEFAULT_ASSUMPTIONS = (__CFG.assumptions || []).map(a => ({ ...a }));
 const __ASSUMPTION_IDS = DEFAULT_ASSUMPTIONS.map(a => a.id);
-const __CAT_COLORS = __CFG.categoryColors || {};
 
 const CONFIG_VALIDATION = validateConfig(__CFG);
 
@@ -201,46 +170,64 @@ const DEFAULT_ITEMS = (__CFG.items || []).map(it => {
   const _src = (typeof it.gross === "string" || typeof it.gross === "number")
     ? String(it.gross)
     : (it._grossSrc || null);
+  const defaultColor = it.kind === "cost" ? "var(--c-orange)" : "var(--ink-2)";
   return {
     ...it,
-    color:  __CAT_COLORS[it.category] || it.color || "var(--muted-2)",
+    color:  it.color || defaultColor,
     _grossSrc: _src,
     gross:  compileFormula(typeof it.gross === "function" ? it.gross : _src, __ASSUMPTION_IDS),
   };
 });
 
-const SCENARIO_OVERRIDES = {};
-const SCENARIO_COUNTERFACTUAL_SHIFT = {};
-const SCENARIO_ITEM_OVERRIDES = {};
-const SCENARIO_LABELS = {};
-for (const [id, s] of Object.entries(__CFG.scenarios || {})) {
-  SCENARIO_OVERRIDES[id]            = s.overrides || {};
-  SCENARIO_COUNTERFACTUAL_SHIFT[id] = s.counterfactualShift || 0;
-  SCENARIO_ITEM_OVERRIDES[id]       = s.itemOverrides || {};
-  SCENARIO_LABELS[id]               = { label: s.label, desc: s.desc };
+// Split a formula string on top-level `*` operators (ignoring `*` inside
+// parens). Used to render baseline expressions as a × chain so the user
+// can see each factor evaluated separately.
+function splitMultiplicativeFactors(formula) {
+  const out = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of String(formula || "")) {
+    if (ch === "(") { depth++; cur += ch; }
+    else if (ch === ")") { depth--; cur += ch; }
+    else if (ch === "*" && depth === 0) {
+      const trimmed = cur.trim();
+      if (trimmed) out.push(trimmed);
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  const last = cur.trim();
+  if (last) out.push(last);
+  return out;
 }
 
+const BASELINE = (__CFG.baseline || []).map(b => {
+  const src = String(b.formula || "0");
+  const factors = splitMultiplicativeFactors(src).map(f => ({
+    src: f,
+    ids: extractAssumptionIds(f, __ASSUMPTION_IDS),
+    eval: compileFormula(f, __ASSUMPTION_IDS),
+  }));
+  return {
+    label: b.label || "",
+    unit: b.unit || "",
+    kind: b.kind || null,
+    src,
+    eval: compileFormula(src, __ASSUMPTION_IDS),
+    factors,
+  };
+});
+
 const PROJECT_META = __CFG.meta || {};
-const DEFAULT_SCENARIO = __CFG.defaultScenario || Object.keys(SCENARIO_LABELS)[0] || "central";
 const READ_ONLY = !!__CFG.__readOnly;
 
 // =========================================================================
-// COMPUTE — applies the waterfall and produces year-by-year cash & soft series
+// COMPUTE — gross → year array → PV. No risk-adjustment waterfall, no
+// cash/soft split: each item's value is what its `gross` formula produces.
 // =========================================================================
-function cumulativePhaseProb(phase, A) {
-  if (!phase) return 1.0;                          // costs / phase-0 always realise
-  const probs = [A.p1_prob, A.p2_prob, A.p3_prob, A.p4_prob].map(v => (v || 0) / 100);
-  let cum = 1;
-  for (let i = 0; i < phase; i++) cum *= probs[i] ?? 1;
-  return cum;
-}
-
 function computeItemSeries(item, A) {
   const r = (A.discount_rate || 0) / 100;
-  const phaseFactor   = cumulativePhaseProb(item.phase, A);
-  const overlapFactor = 1 - (item.overlap || 0);
-  const counterFactor = 1 - (item.counterfactual || 0);
-  const totalFactor   = phaseFactor * overlapFactor * counterFactor;
 
   const start = item.startYear || 1;
   const yearArr = Array(HORIZON).fill(0);
@@ -260,69 +247,51 @@ function computeItemSeries(item, A) {
   let grossPV = 0;
   for (let y = 0; y < HORIZON; y++) grossPV += yearArr[y] / Math.pow(1 + r, y);
 
-  const adjusted = yearArr.map(v => v * totalFactor);
-  const cash = adjusted.map(v => v * (item.cashRealisation ?? 1));
-  const soft = adjusted.map(v => v * (1 - (item.cashRealisation ?? 1)));
-
-  const overlapPV = grossPV * overlapFactor;
-  const phasePV   = overlapPV * phaseFactor;
-  const netPV     = phasePV * counterFactor;
-  const cashPV    = netPV * (item.cashRealisation ?? 1);
-  const softPV    = netPV * (1 - (item.cashRealisation ?? 1));
-
   return {
-    cash, soft,
-    grossAnnual, totalFactor, phaseFactor, overlapFactor, counterFactor,
-    grossPV, overlapPV, phasePV, netPV, cashPV, softPV,
+    cash: yearArr,
+    grossAnnual,
+    grossPV,
+    cashPV: grossPV,
   };
 }
 
-function computeModel(items, A, opts = { includeSoft: false }) {
+function computeModel(items, A) {
   const perItem = {};
   const yearTotals = { cost: Array(HORIZON).fill(0), benefit: Array(HORIZON).fill(0) };
-  let totalCostsPV = 0, totalCashBenefitsPV = 0, totalSoftBenefitsPV = 0;
+  let totalCostsPV = 0, totalBenefitsPV = 0;
 
   for (const it of items) {
     const series = computeItemSeries(it, A);
     perItem[it.id] = series;
 
-    const yearly = it.kind === "benefit"
-      ? series.cash.map((c, i) => c + (opts.includeSoft ? series.soft[i] : 0))
-      : series.cash;
-
     for (let y = 0; y < HORIZON; y++) {
-      if (it.kind === "cost") yearTotals.cost[y] += yearly[y];
-      else yearTotals.benefit[y] += yearly[y];
+      if (it.kind === "cost") yearTotals.cost[y] += series.cash[y];
+      else yearTotals.benefit[y] += series.cash[y];
     }
 
     if (it.kind === "cost") totalCostsPV += series.cashPV;
-    else { totalCashBenefitsPV += series.cashPV; totalSoftBenefitsPV += series.softPV; }
+    else totalBenefitsPV += series.cashPV;
   }
 
-  const totalBenefitsPV = totalCashBenefitsPV + (opts.includeSoft ? totalSoftBenefitsPV : 0);
   const npv = totalBenefitsPV - totalCostsPV;
   const bcr = totalCostsPV > 0 ? totalBenefitsPV / totalCostsPV : 0;
 
   return {
     perItem, yearTotals, npv, bcr,
-    totalCostsPV, totalCashBenefitsPV, totalSoftBenefitsPV, totalBenefitsPV,
+    totalCostsPV, totalBenefitsPV,
   };
 }
 
-// IRR via bisection. Wider bounds than before (-95% to 1000%) and a guard
-// against multi-sign-change cash flows (which can have multiple IRR roots).
-function computeIRR(items, A, includeSoft = false) {
+// IRR via bisection. Multi-sign-change cash flows have non-unique IRR,
+// so we refuse rather than silently pick one root.
+function computeIRR(items, A) {
   const net = Array(HORIZON).fill(0);
   for (const it of items) {
     const s = computeItemSeries(it, A);
-    const series = it.kind === "benefit"
-      ? s.cash.map((c, i) => c + (includeSoft ? s.soft[i] : 0))
-      : s.cash;
     for (let y = 0; y < HORIZON; y++) {
-      net[y] += (it.kind === "benefit" ? 1 : -1) * series[y];
+      net[y] += (it.kind === "benefit" ? 1 : -1) * s.cash[y];
     }
   }
-  // Multi-sign-change → IRR is non-unique. Refuse rather than silently pick one.
   let signFlips = 0, prev = 0;
   for (const v of net) {
     if (v === 0) continue;
@@ -345,23 +314,16 @@ function computeIRR(items, A, includeSoft = false) {
   return (lo + hi) / 2;
 }
 
-function itemConfidence(item, A) {
-  return cumulativePhaseProb(item.phase, A) * (1 - (item.counterfactual || 0));
-}
-
 // Sensitivity: per-assumption ±25% by default; respect optional
 // sensitivityRange = { lo, hi } where lo/hi are multipliers on the base value.
 // Fourth arg accepts either a number (legacy: defaultDelta) or an options
-// object { defaultDelta, includeSoft }. includeSoft must match the caller's
-// current view so re-rankings track the global soft-value toggle.
+// object { defaultDelta }.
 function computeSensitivity(items, A, baseAssumptions, optsOrDelta) {
   const opts = typeof optsOrDelta === "number"
     ? { defaultDelta: optsOrDelta }
     : (optsOrDelta || {});
   const defaultDelta = opts.defaultDelta != null ? opts.defaultDelta : 0.25;
-  const includeSoft  = !!opts.includeSoft;
-  const modelOpts = { includeSoft };
-  const baseNPV = computeModel(items, A, modelOpts).npv;
+  const baseNPV = computeModel(items, A).npv;
   const out = [];
   for (const a of baseAssumptions) {
     if (typeof a.value !== "number") continue;
@@ -370,8 +332,8 @@ function computeSensitivity(items, A, baseAssumptions, optsOrDelta) {
     const hiMul = r && Number.isFinite(r.hi) ? r.hi : 1 + defaultDelta;
     const lo = { ...A, [a.id]: a.value * loMul };
     const hi = { ...A, [a.id]: a.value * hiMul };
-    const npvLo = computeModel(items, lo, modelOpts).npv;
-    const npvHi = computeModel(items, hi, modelOpts).npv;
+    const npvLo = computeModel(items, lo).npv;
+    const npvHi = computeModel(items, hi).npv;
     out.push({
       id: a.id, label: a.label,
       base: baseNPV, lo: npvLo, hi: npvHi,
@@ -386,11 +348,35 @@ function computeSensitivity(items, A, baseAssumptions, optsOrDelta) {
 // =========================================================================
 // FORMAT HELPERS
 // =========================================================================
+// 1-2-2.5-5-10 ("nice number") rounding for human-readable headlines.
+// Snaps to {1, 2, 2.5, 5} × 10^k. Calculations stay in actuals — this is
+// only used to massage displayed figures.
+const niceRound = (v) => {
+  if (!Number.isFinite(v) || v === 0) return v;
+  const sign = v < 0 ? -1 : 1;
+  const x = Math.abs(v);
+  const k = Math.floor(Math.log10(x));
+  const base = Math.pow(10, k);
+  const leading = x / base; // in [1, 10)
+  const steps = [1, 2, 2.5, 5, 10];
+  let best = steps[0];
+  let bestDist = Math.abs(leading - steps[0]);
+  for (let i = 1; i < steps.length; i++) {
+    const d = Math.abs(leading - steps[i]);
+    if (d < bestDist) { best = steps[i]; bestDist = d; }
+  }
+  return sign * best * base;
+};
+
 const fmtMoney = (v, opts = {}) => {
+  if (!opts.exact && typeof window !== "undefined" && window.CBAGENT_ROUNDING) {
+    v = niceRound(v);
+  }
   const sign = v < 0 ? "-" : "";
   const x = Math.abs(v);
-  if (x >= 1_000_000) return `${sign}$${(x/1_000_000).toFixed(opts.precise ? 2 : 1)}M`;
-  if (x >= 1_000)     return `${sign}$${(x/1_000).toFixed(opts.precise ? 1 : 0)}k`;
+  // Headline numbers: integer M/k buckets — no trailing decimal noise.
+  if (x >= 1_000_000) return `${sign}$${Math.round(x/1_000_000)}M`;
+  if (x >= 1_000)     return `${sign}$${Math.round(x/1_000)}k`;
   return `${sign}$${Math.round(x).toLocaleString()}`;
 };
 const fmtMoneyExact = (v) => `${v < 0 ? "-" : ""}$${Math.round(Math.abs(v)).toLocaleString()}`;
@@ -398,12 +384,17 @@ const fmtPct = (v) => `${(v * 100).toFixed(1)}%`;
 
 Object.assign(window, {
   HORIZON, YEARS,
-  DEFAULT_ASSUMPTIONS, DEFAULT_ITEMS,
-  SCENARIO_OVERRIDES, SCENARIO_COUNTERFACTUAL_SHIFT, SCENARIO_ITEM_OVERRIDES, SCENARIO_LABELS,
-  PROJECT_META, DEFAULT_SCENARIO, READ_ONLY,
+  DEFAULT_ASSUMPTIONS, DEFAULT_ITEMS, BASELINE,
+  PROJECT_META, READ_ONLY,
   CONFIG_VALIDATION,
-  computeModel, computeItemSeries, computeIRR, cumulativePhaseProb,
-  itemConfidence, computeSensitivity,
+  computeModel, computeItemSeries, computeIRR,
+  computeSensitivity, splitMultiplicativeFactors,
   validateFormula, validateConfig, extractAssumptionIds, compileFormula,
-  fmtMoney, fmtMoneyExact, fmtPct,
+  fmtMoney, fmtMoneyExact, fmtPct, niceRound,
 });
+
+// Default the visual rounding layer on — App can flip the flag via the
+// header checkbox; fmtMoney consults this at render time.
+if (typeof window !== "undefined" && window.CBAGENT_ROUNDING === undefined) {
+  window.CBAGENT_ROUNDING = true;
+}
