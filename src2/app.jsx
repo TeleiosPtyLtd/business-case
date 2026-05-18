@@ -212,9 +212,41 @@ const App = () => {
     __persisted?.overrides || __snap.__overrides || {}
   );
   const setAssumption = (id, value) => setOverrides(prev => ({ ...prev, [id]: value }));
+
+  // Level overrides: lets the consultant declare a number at item /
+  // category / section level WITHOUT changing the underlying
+  // assumptions. Overrides propagate UP only (a category sum uses
+  // overridden item values; a section sum uses overridden category
+  // totals where set). Setting a higher-level override masks the
+  // computed sum but does not push values down.
+  //   shape: { item: {[id]: num}, cat: {[`${scope}_${kind}`]: num},
+  //            section: {[scope]: num}, total: num | undefined }
+  const [levelOverrides, setLevelOverrides] = React.useState(() =>
+    __persisted?.levelOverrides || {}
+  );
+  const setLevelOverride = React.useCallback((kind, key, value) => {
+    setLevelOverrides(prev => {
+      const next = { ...prev, [kind]: { ...(prev[kind] || {}) } };
+      if (value == null || !Number.isFinite(value)) {
+        delete next[kind][key];
+        if (Object.keys(next[kind]).length === 0) delete next[kind];
+      } else {
+        next[kind][key] = value;
+      }
+      return next;
+    });
+  }, []);
   const A_eff = React.useMemo(() => ({ ...A, ...overrides }), [A, overrides]);
   const assumptionsEff = React.useMemo(
-    () => assumptions.map(a => a.id in overrides ? { ...a, value: overrides[a.id], modified: true } : a),
+    () => assumptions.map(a => a.id in overrides
+      // Preserve the authored value as _base so downstream UI (in
+      // particular the slider in the inline editor) can derive a
+      // stable range from it. Without _base, the slider recomputes
+      // its range from the live overridden value every render — and
+      // dragging the slider then moves the range it was just drawn
+      // against, which feels broken.
+      ? { ...a, value: overrides[a.id], _base: a.value, modified: true }
+      : { ...a, _base: a.value }),
     [assumptions, overrides]
   );
   // Full model — every item, every scope. Used by per-item displays,
@@ -310,7 +342,7 @@ const App = () => {
         localStorage.setItem(STATE_KEY, JSON.stringify({
           v: 1,
           items: serialiseItems(items),
-          overrides, theme, tab, selectedItemId,
+          overrides, levelOverrides, theme, tab, selectedItemId,
           customAssumptions, share, sortBySensitivity,
           scopeLevel, niceRounding,
           confirmedAssumptions, commitmentsConfirmed, worldProceedClicked,
@@ -319,7 +351,7 @@ const App = () => {
       } catch (e) { setSaveState("idle"); /* quota or disabled — silent */ }
     }, 200);
     return () => clearTimeout(handle);
-  }, [items, overrides, theme, tab, selectedItemId, customAssumptions, share, sortBySensitivity, scopeLevel, niceRounding, confirmedAssumptions, commitmentsConfirmed, worldProceedClicked]);
+  }, [items, overrides, levelOverrides, theme, tab, selectedItemId, customAssumptions, share, sortBySensitivity, scopeLevel, niceRounding, confirmedAssumptions, commitmentsConfirmed, worldProceedClicked]);
   // Fade "saved" back to idle after a moment so the indicator doesn't
   // burn into the header.
   React.useEffect(() => {
@@ -345,6 +377,22 @@ const App = () => {
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, [exportMenuOpen]);
+
+  // Overflow menu — single "⋯" affordance on the topbar that holds the
+  // consultant-side controls (Share, Export, Rounding, Reset, Sign in).
+  // The buyer's eyepath should land on the case title, not on a row of
+  // SaaS pills. Author tools stay one click away behind the icon.
+  const [overflowOpen, setOverflowOpen] = React.useState(false);
+  const overflowMenuRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!overflowOpen) return;
+    const onDoc = (e) => {
+      if (overflowMenuRef.current && overflowMenuRef.current.contains(e.target)) return;
+      setOverflowOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [overflowOpen]);
 
   const project = { name: PROJECT_META.shortName };
 
@@ -375,51 +423,51 @@ const App = () => {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10 }}>
             <SaveIndicator state={saveState} />
-            {!isMobile && (
-              <label
-                title="Show numbers rounded to nice steps (1, 2, 2.5, 5, 10 × 10ⁿ). Underlying values are unchanged."
-                style={{
-                  display: "inline-flex", alignItems: "center", gap: 6,
-                  fontSize: 12, color: "var(--muted)", cursor: "pointer",
-                  userSelect: "none",
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={niceRounding}
-                  onChange={e => setNiceRounding(e.target.checked)}
-                  style={{ cursor: "pointer", margin: 0 }}
-                />
-                Rounding
-              </label>
-            )}
             <ThemeToggle theme={theme} setTheme={setTheme} />
-            {!isMobile && (
-              <button onClick={() => setResetOpen(true)}
-                title="Discard local edits and restore defaults"
-                style={{
-                  border: "1px solid var(--line)", background: "var(--surface)",
-                  color: "var(--muted)", padding: "7px 12px", borderRadius: 999,
-                  fontSize: 12, cursor: "pointer",
-                }}>Reset</button>
+            {(READ_ONLY || isMobile) && (
+              <span style={{
+                fontSize: 11, fontFamily: "var(--mono)", color: "var(--muted)",
+                padding: "6px 10px", border: "1px solid var(--line)", borderRadius: 999,
+                background: "var(--surface-2)", whiteSpace: "nowrap",
+              }}>{isMobile && !READ_ONLY ? "view only" : "shared · explore only"}</span>
             )}
-            {!isMobile && (
-              <div ref={exportMenuRef} style={{ position: "relative" }}>
-                <Pill2 onClick={() => setExportMenuOpen(o => !o)}>
-                  <IconDownload size={13} /> Export
-                  <IconChevDown size={12} style={{ marginLeft: 2 }} />
-                </Pill2>
-                {exportMenuOpen && (
+            {!READ_ONLY && !isMobile && (
+              <div ref={overflowMenuRef} style={{ position: "relative" }}>
+                <button
+                  onClick={() => setOverflowOpen(o => !o)}
+                  title="More"
+                  aria-label="More options"
+                  aria-expanded={overflowOpen}
+                  style={{
+                    border: "1px solid var(--line)",
+                    background: overflowOpen ? "var(--surface-2)" : "var(--surface)",
+                    color: "var(--muted)",
+                    padding: 0,
+                    borderRadius: 999,
+                    cursor: "pointer",
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    width: 36, height: 32,
+                    fontFamily: "var(--sans)", fontSize: 18, fontWeight: 700,
+                    lineHeight: 1, letterSpacing: "0.05em",
+                    transition: "background 160ms ease",
+                  }}
+                >⋯</button>
+                {overflowOpen && (
                   <div style={{
                     position: "absolute", top: "calc(100% + 6px)", right: 0,
-                    minWidth: 200,
+                    minWidth: 240,
                     background: "var(--surface)", border: "1px solid var(--line)",
                     borderRadius: 12, boxShadow: "0 12px 32px rgba(0,0,0,0.10)",
                     overflow: "hidden", zIndex: 30,
                   }}>
                     <ExportMenuItem
-                      title="Excel (.xlsx)"
-                      sub="Live model · editable assumptions · auditor-grade"
+                      title="Share this case"
+                      sub="Password-protected link"
+                      onClick={() => { setShareOpen(true); setOverflowOpen(false); }}
+                    />
+                    <ExportMenuItem
+                      title="Export to Excel"
+                      sub="Live model, editable assumptions"
                       onClick={() => {
                         exportXlsx({
                           items: adjustedItems, assumptions: assumptionsEff,
@@ -429,30 +477,46 @@ const App = () => {
                           projectDescription: PROJECT_META.description,
                           horizon: HORIZON,
                         });
-                        setExportMenuOpen(false);
+                        setOverflowOpen(false);
                       }}
                     />
                     <ExportMenuItem
-                      title="PDF"
-                      sub="Printable handout · invites markup"
+                      title="Export to PDF"
+                      sub="Printable handout"
                       onClick={() => {
-                        setExportMenuOpen(false);
+                        setOverflowOpen(false);
                         printPDF(PROJECT_META.shortName || PROJECT_META.name);
                       }}
                     />
+                    <div style={{
+                      borderTop: "1px solid var(--line)",
+                      padding: "11px 14px",
+                    }}>
+                      <StyledCheckbox
+                        checked={niceRounding}
+                        onChange={setNiceRounding}
+                        label="Round numbers nicely"
+                        title="Round numbers to nice steps (1, 2, 2.5, 5, 10). Underlying values are unchanged."
+                        fontSize={13}
+                        color="var(--ink-2)"
+                      />
+                    </div>
+                    <div style={{ borderTop: "1px solid var(--line)" }}>
+                      <ExportMenuItem
+                        title="Reset to defaults"
+                        sub="Discard local edits"
+                        onClick={() => { setResetOpen(true); setOverflowOpen(false); }}
+                      />
+                      <ExportMenuItem
+                        title="Sign in"
+                        sub="Teleios consultant access"
+                        onClick={() => setOverflowOpen(false)}
+                      />
+                    </div>
                   </div>
                 )}
               </div>
             )}
-            {!READ_ONLY && !isMobile && <Pill2 onClick={() => setShareOpen(true)}>Share</Pill2>}
-            {(READ_ONLY || isMobile) && (
-              <span style={{
-                fontSize: 11, fontFamily: "var(--mono)", color: "var(--muted)",
-                padding: "6px 10px", border: "1px solid var(--line)", borderRadius: 999,
-                background: "var(--surface-2)", whiteSpace: "nowrap",
-              }}>{isMobile && !READ_ONLY ? "view only" : "shared · explore only"}</span>
-            )}
-            {!READ_ONLY && !isMobile && <Pill2 primary>Sign in</Pill2>}
           </div>
         </div>
       </header>
@@ -481,6 +545,10 @@ const App = () => {
         onEditAssumption={viewOnly ? null : setEditingAssumption}
         scopeLevel={scopeLevel}
         onSetScopeLevel={setScopeLevel}
+        niceRounding={niceRounding}
+        setNiceRounding={setNiceRounding}
+        levelOverrides={levelOverrides}
+        setLevelOverride={setLevelOverride}
         visibleAssumptionIds={visibleAssumptionIds}
         highlightedIds={highlightedIds}
         hoveredIds={hoveredIds}
@@ -586,12 +654,9 @@ const App = () => {
     {assumptionsGridOpen && (
       <AssumptionsGrid
         assumptions={assumptionsEff}
-        items={adjustedItems}
         A={A_eff}
         setAssumption={setAssumption}
         viewOnly={viewOnly}
-        confirmedAssumptions={confirmedAssumptions}
-        onToggleConfirm={(id) => markAssumptionConfirmed(id, !confirmedAssumptions[id])}
         onClose={() => setAssumptionsGridOpen(false)}
       />
     )}
@@ -714,56 +779,61 @@ const SummaryRow = ({ label, value, tooltip, helper }) => (
 // the editable estimates, and the full analytical view (timeline / data
 // tables / sensitivity / NPV / BCR / IRR). Confidence is restraint.
 
-const LandingRow = ({ label, sublabel, value, accent, valuePrefix, valueNode, isOpen, onToggle, isFirst, children, muted, stickyTop, elevated, dataKey }) => (
-  <div style={{
-    borderTop: isFirst ? "none" : "1px solid var(--line)",
-    opacity: muted ? 0.32 : 1,
-    transition: "opacity 220ms",
-  }}>
-    <button
-      onClick={onToggle}
-      {...(stickyTop ? { "data-marginalia-top-bound": "" } : {})}
-      {...(dataKey ? { "data-landing-row": dataKey } : {})}
-      style={{
-      width: "100%", border: "none",
-      background: stickyTop ? "color-mix(in srgb, var(--bg) 92%, transparent)" : "transparent",
-      ...(stickyTop ? {
-        position: "sticky", top: 0, zIndex: 10,
-        backdropFilter: "saturate(140%) blur(8px)",
-        WebkitBackdropFilter: "saturate(140%) blur(8px)",
-        borderBottom: "1px solid var(--line)",
-        marginBottom: -1,
-      } : {}),
-      ...(elevated ? {
-        position: stickyTop ? "sticky" : "relative",
-        zIndex: 1002,
-        pointerEvents: "none",
-      } : {}),
-      padding: "26px 4px", cursor: "pointer",
-      display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16,
-      textAlign: "left",
-    }}>
+const LandingRow = ({ label, sublabel, value, accent, valuePrefix, valueNode, isOpen, onToggle, isFirst, children, muted, stickyTop, elevated, dataKey, isStatic, headlineSize, valueSize }) => {
+  // `isStatic` mode: render as a heading + always-visible contents
+  // (no toggle, no chevron, no drawer divider). Used for the Benefits
+  // section where the table should be displayed on its own rather than
+  // collapsed behind a click target.
+  const open = isStatic ? true : isOpen;
+  const headerStyle = {
+    width: "100%", border: "none",
+    background: stickyTop ? "color-mix(in srgb, var(--bg) 92%, transparent)" : "transparent",
+    ...(stickyTop ? {
+      position: "sticky", top: 0, zIndex: 10,
+      backdropFilter: "saturate(140%) blur(8px)",
+      WebkitBackdropFilter: "saturate(140%) blur(8px)",
+      borderBottom: "1px solid var(--line)",
+      marginBottom: -1,
+    } : {}),
+    ...(elevated ? {
+      position: stickyTop ? "sticky" : "relative",
+      zIndex: 1002,
+      pointerEvents: "none",
+    } : {}),
+    padding: "26px 4px",
+    cursor: isStatic ? "default" : "pointer",
+    display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16,
+    textAlign: "left",
+  };
+  const headerInner = (
+    <>
       <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 14 }}>
-          <span style={{
-            fontFamily: "var(--mono)", color: "var(--muted)",
-            fontSize: 13, display: "inline-block",
-            transform: isOpen ? "rotate(90deg)" : "rotate(0)",
-            transformOrigin: "center 45%",
-            transition: "transform 160ms",
-            width: 12,
-          }}>▸</span>
+          {!isStatic && (
+            <span style={{
+              fontFamily: "var(--mono)", color: "var(--muted)",
+              fontSize: 13, display: "inline-block",
+              transform: open ? "rotate(90deg)" : "rotate(0)",
+              transformOrigin: "center 45%",
+              transition: "transform 160ms",
+              width: 12,
+            }}>▸</span>
+          )}
           <div style={{
             fontFamily: "var(--serif)", fontWeight: 500,
-            fontSize: (value != null || valueNode) ? 22 : 16,
+            fontSize: headlineSize || ((value != null || valueNode) ? 22 : 16),
             color: "var(--ink)",
-            letterSpacing: "-0.01em",
+            letterSpacing: "-0.015em",
+            // When the row is a static section header (no chevron), it
+            // owns the section visually — bump scroll-margin so the
+            // sticky topbar doesn't clip it on jump-to.
+            ...(isStatic ? { scrollMarginTop: 80 } : {}),
           }}>{label}</div>
         </div>
         {sublabel && (
           <div style={{
-            fontSize: 12, color: "var(--muted-2)",
-            paddingLeft: 26,
+            fontSize: 13.5, color: "var(--muted)",
+            paddingLeft: isStatic ? 0 : 26, lineHeight: 1.4,
           }}>
             {sublabel}
           </div>
@@ -771,21 +841,52 @@ const LandingRow = ({ label, sublabel, value, accent, valuePrefix, valueNode, is
       </div>
       {valueNode ? valueNode : (value != null && (
         <div style={{
-          fontFamily: "var(--serif)", fontSize: 26, fontWeight: 500,
+          fontFamily: "var(--serif)", fontSize: valueSize || 26, fontWeight: 500,
           color: accent || "var(--ink)", whiteSpace: "nowrap",
           fontVariantNumeric: "tabular-nums",
+          letterSpacing: "-0.015em",
         }}>
           {valuePrefix || ""}{fmtMoney(Math.abs(value), { exact: true })}
         </div>
       ))}
-    </button>
-    {isOpen && (
-      <div style={{ padding: "0 0 32px 32px" }}>
-        {children}
-      </div>
-    )}
-  </div>
-);
+    </>
+  );
+  return (
+    <div style={{
+      borderTop: isFirst ? "none" : "1px solid var(--line)",
+      opacity: muted ? 0.32 : 1,
+      transition: "opacity 220ms",
+    }}>
+      {isStatic ? (
+        <div
+          {...(stickyTop ? { "data-marginalia-top-bound": "" } : {})}
+          {...(dataKey ? { "data-landing-row": dataKey } : {})}
+          style={headerStyle}
+        >{headerInner}</div>
+      ) : (
+        <button
+          onClick={onToggle}
+          {...(stickyTop ? { "data-marginalia-top-bound": "" } : {})}
+          {...(dataKey ? { "data-landing-row": dataKey } : {})}
+          style={headerStyle}
+        >{headerInner}</button>
+      )}
+      {open && (
+        // Toggleable rows get a divider + indent to mark the drawer.
+        // Static rows render contents flush so the table reads as the
+        // section's body, not a popped-out drawer.
+        <div style={isStatic ? {
+          padding: "8px 0 32px 0",
+        } : {
+          borderTop: "1px solid var(--line)",
+          padding: "20px 0 32px 32px",
+        }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+};
 
 // Opacity per scope tier — color discipline says scopes 2/3 should fade.
 const SCOPE_OPACITY = { 1: 1, 2: 0.65, 3: 0.4 };
@@ -793,9 +894,83 @@ const SCOPE_OPACITY = { 1: 1, 2: 0.65, 3: 0.4 };
 // Static "net benefit" row — subtraction uses ONLY the primary (scope-1)
 // benefit. Secondary + downstream (scope 2 + 3) PV appears in faint green
 // alongside the result as a "+ bonus" so it reads as upside, not load-bearing.
+// Small editorial-style checkbox. Native checkbox is hidden (kept in
+// the DOM for accessibility — screen readers and keyboard tabbing
+// still work), and the visible square is a 13px box with a 1px
+// border. Checked state fills with ink and shows a hairline tick;
+// hover thickens the border slightly so the affordance is felt
+// without breaking the quiet register.
+const StyledCheckbox = ({ checked, onChange, label, title, fontSize, color }) => {
+  const [hover, setHover] = React.useState(false);
+  const [focus, setFocus] = React.useState(false);
+  return (
+    <label
+      title={title}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 8,
+        cursor: "pointer", userSelect: "none",
+        fontFamily: "var(--sans)",
+        fontSize: fontSize || 12,
+        color: color || "var(--muted)",
+        letterSpacing: "0.01em",
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={!!checked}
+        onChange={(e) => onChange(e.target.checked)}
+        onFocus={() => setFocus(true)}
+        onBlur={() => setFocus(false)}
+        style={{
+          // Visually hide while keeping the input in the tab order.
+          position: "absolute",
+          width: 1, height: 1,
+          margin: -1, padding: 0,
+          overflow: "hidden",
+          clip: "rect(0 0 0 0)",
+          whiteSpace: "nowrap",
+          border: 0,
+        }}
+      />
+      <span
+        aria-hidden
+        style={{
+          width: 13, height: 13,
+          display: "inline-flex",
+          alignItems: "center", justifyContent: "center",
+          border: `1px solid ${checked
+            ? "var(--ink)"
+            : (hover || focus ? "var(--ink-2)" : "var(--line-strong)")}`,
+          background: checked ? "var(--ink)" : "transparent",
+          boxShadow: focus ? "0 0 0 2px color-mix(in srgb, var(--ink) 14%, transparent)" : "none",
+          transition: "background 140ms ease, border-color 140ms ease, box-shadow 140ms ease",
+          flex: "0 0 auto",
+        }}
+      >
+        {checked && (
+          <svg width="9" height="9" viewBox="0 0 9 9" aria-hidden focusable="false">
+            <path
+              d="M1.6 4.6 L3.6 6.5 L7.4 2.5"
+              fill="none"
+              stroke="var(--bg)"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        )}
+      </span>
+      {label && <span>{label}</span>}
+    </label>
+  );
+};
+
 const NetBenefitRow = ({
   npv, costsPV, bcr, irr, bonusPV,
-  elevated, showCostsHint,
+  elevated, showCostsHint, horizon,
+  niceRounding, setNiceRounding,
 }) => {
   const positive = npv >= 0;
   const accent = positive ? "var(--green-deep)" : "var(--red-deep)";
@@ -846,10 +1021,20 @@ const NetBenefitRow = ({
     <>
       <div style={{
         fontFamily: "var(--serif)", fontWeight: 500,
-        fontSize: 22, color: "var(--muted-2)", letterSpacing: "-0.01em",
+        fontSize: 28, color: "var(--ink)", letterSpacing: "-0.015em",
         paddingLeft: 26,
+        display: "flex", flexDirection: "column", gap: 2,
         visibility: forOverlay ? "visible" : (elevated ? "hidden" : "visible"),
-      }}>Total</div>
+      }}>
+        <span>Total over {horizon} {horizon === 1 ? "year" : "years"}</span>
+        <span style={{
+          fontFamily: "var(--sans)", fontSize: 12, fontWeight: 500,
+          color: "var(--muted)", letterSpacing: "0.01em",
+          textTransform: "none",
+        }}>
+          today's dollars, after costs
+        </span>
+      </div>
       <div style={{
         position: "relative",
         fontFamily: "var(--serif)", whiteSpace: "nowrap",
@@ -870,7 +1055,10 @@ const NetBenefitRow = ({
           </span>
         )}
         <div style={{ position: "relative" }}>
-          <span style={{ fontSize: 28, fontWeight: 500, color: accent }}>
+          <span style={{
+            fontSize: 44, fontWeight: 500, color: accent,
+            letterSpacing: "-0.02em",
+          }}>
             {positive ? "" : "−"}{fmtMoney(Math.abs(npv), { exact: true })}
           </span>
           {bonusPV >= 1 && (
@@ -911,6 +1099,21 @@ const NetBenefitRow = ({
                 {" "}annual return rate
               </span>
             )}
+          </div>
+        )}
+        {/* Rounding toggle — sits directly under the headline figure
+            so the reader can see (and undo) the rounding without
+            hunting through the overflow menu. Shares state with the
+            menu's checkbox. */}
+        {setNiceRounding && (
+          <div style={{ marginTop: 6 }}>
+            <StyledCheckbox
+              checked={niceRounding}
+              onChange={setNiceRounding}
+              label="Round numbers nicely"
+              title="Show numbers rounded to nice steps (1, 2, 2.5, 5, 10). Underlying values stay exact."
+              fontSize={11}
+            />
           </div>
         )}
       </div>
@@ -985,7 +1188,10 @@ const BenefitsHeadlineValue = ({ includedDisp, remainingDisp }) => {
       alignItems: isMobile ? "flex-end" : undefined,
       gap: isMobile ? 2 : 0,
     }}>
-      <span style={{ fontSize: 30, fontWeight: 500, color: green }}>
+      <span style={{
+        fontSize: 32, fontWeight: 500, color: green,
+        letterSpacing: "-0.015em",
+      }}>
         {fmtMoney(includedDisp, { exact: true })}
       </span>
       {showBonus && !isMobile && (
@@ -1601,13 +1807,13 @@ const InlineAssumptionEditor = ({ a, value, onChange, disabled }) => {
           style={{
             flex: 1, minWidth: 0,
             background: "transparent", border: "none", outline: "none",
-            padding: "7px 10px", fontFamily: "var(--mono)", fontSize: 13,
+            padding: "7px 10px", fontFamily: "var(--mono)", fontSize: 15,
             color: "var(--ink)", textAlign: "right",
           }}
         />
         {a.unit && (
           <span style={{
-            fontSize: 11.5, color: "var(--muted)", fontFamily: "var(--mono)",
+            fontSize: 13, color: "var(--muted)", fontFamily: "var(--mono)",
             padding: "0 10px 0 6px", whiteSpace: "nowrap", flex: "0 0 auto",
           }}>{a.unit}</span>
         )}
@@ -2142,6 +2348,1755 @@ const BenefitsBreakdown = ({ items, scopeLevel, activeKind, focusedAssumptionId,
   );
 };
 
+// =========================================================================
+// BenefitsListing — essay-form benefits surface.
+//
+// Replaces the three-column dashboard breakdown. The design follows from
+// the page's purpose:
+//
+//   1. Argument structure is visual structure. The pitch lives on the
+//      Direct case alone; Adjacent and Downstream are a contingent
+//      appendix the buyer is never asked to count.
+//   2. Mobile-first. Single vertical column; no horizontal "buckets"
+//      row that collapses badly on phones.
+//   3. The buyer reads top-to-bottom. Each scope is a section; inside
+//      each section, items group by type (Revenue uplift, Cost savings,
+//      Qualitative wins).
+//   4. Descriptions are always visible. The buyer never needs to hover
+//      to understand what a row claims.
+//   5. Click any row to open the estimate editor (preserves agency —
+//      the buyer can interrogate any number).
+//
+// Bonus (Adjacent + Downstream) is collapsed behind a single toggle.
+// The toggle never changes the Total at the bottom of the page; bonus
+// is upside, not load-bearing.
+// =========================================================================
+
+// AssumptionRow — single assumption editor in the inline expansion.
+// Slider + number input share the same value; the slider spans the
+// authored sensitivityRange (sceptical CFO ↔ champion) but the input
+// accepts anything outside that range too. Description + rationale
+// always visible because the buyer who clicked the row is asking the
+// question "why did you assume this?".
+// Compact assumption row. Default state is one tight line: label +
+// inline number input. Click the label to expand the row in place —
+// the expanded state adds the description, the source, and a slider.
+// No "Why / Source" eyebrows; the prose itself is the legend.
+const AssumptionRow = ({ a, value, setAssumption, disabled }) => {
+  const isQual = !Number.isFinite(value);
+  const [expanded, setExpanded] = React.useState(false);
+  // Authored base value — slider range derives from this so dragging
+  // the slider never moves the range underneath the thumb.
+  const base = Number.isFinite(a._base) ? a._base
+    : (Number.isFinite(a.value) ? a.value : 0);
+  const r = a.sensitivityRange;
+  const hasRange = !isQual && r && Number.isFinite(r.lo) && Number.isFinite(r.hi);
+  const fallbackSpan = Math.max(Math.abs(base), 1) * 0.5;
+  const baseLo = hasRange
+    ? Math.min(base * r.lo, base * r.hi)
+    : (base - fallbackSpan);
+  const baseHi = hasRange
+    ? Math.max(base * r.lo, base * r.hi)
+    : (base + fallbackSpan);
+  // If the live value sits outside the authored band (because a prior
+  // edit overshot it), extend the slider's effective range to include
+  // it. Otherwise the slider thumb gets pinned at the boundary and the
+  // first drag emits a value far below the live one, which feels like
+  // the slider "snapping" backwards. The visible "sceptical / champion"
+  // labels still display the authored band.
+  const lo = Math.min(baseLo, Number.isFinite(value) ? value : baseLo);
+  const hi = Math.max(baseHi, Number.isFinite(value) ? value : baseHi);
+  const step = Number.isFinite(a.step) && a.step > 0 ? a.step : 1;
+  const snap = (n) => Math.round(n / step) * step;
+  const hardLo = ["%", "$", "$/yr", "$/hr", "hrs", "/yr", "/mo"].includes((a.unit || "").trim())
+    ? 0 : (((a.unit || "").trim() === "pp") ? -100 : -Infinity);
+  const hardHi = ((a.unit || "").trim() === "%") ? 100
+    : ((a.unit || "").trim() === "pp") ? 100
+    : Infinity;
+  const clamp = (n) => Math.max(hardLo, Math.min(hardHi, n));
+  const hasDetail = !!(a.description || a.source || a.rationale || (!isQual && hasRange));
+  return (
+    <div style={{
+      borderTop: "1px solid var(--line)",
+    }}>
+      {/* Tight row: label on the left, current value editor on the
+          right. Whole label is the toggle. */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 12,
+        padding: "8px 0",
+      }}>
+        <button
+          type="button"
+          onClick={hasDetail ? () => setExpanded(e => !e) : undefined}
+          aria-expanded={expanded}
+          disabled={!hasDetail}
+          style={{
+            flex: "1 1 auto", minWidth: 0,
+            background: "transparent", border: "none", padding: 0, margin: 0,
+            textAlign: "left", cursor: hasDetail ? "pointer" : "default",
+            font: "inherit",
+            display: "flex", alignItems: "center", gap: 8,
+          }}
+        >
+          {hasDetail && (
+            <span style={{
+              fontFamily: "var(--mono)", fontSize: 10,
+              color: "var(--muted-2)",
+              transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+              transition: "transform 160ms ease",
+              display: "inline-block", width: 10,
+            }}>▸</span>
+          )}
+          <span style={{
+            fontFamily: "var(--serif)", fontSize: 14.5,
+            color: "var(--ink)", letterSpacing: "-0.005em",
+            lineHeight: 1.3, whiteSpace: "nowrap",
+            overflow: "hidden", textOverflow: "ellipsis",
+          }}>{a.label}</span>
+        </button>
+        {!isQual && (
+          <div style={{ width: 120, flex: "0 0 120px" }}>
+            <TargetValueEditor
+              a={a} value={value}
+              onChange={(v) => setAssumption(a.id, v)}
+              disabled={disabled}
+            />
+          </div>
+        )}
+      </div>
+      {expanded && hasDetail && (
+        <div style={{
+          padding: "0 0 14px 18px",
+          display: "flex", flexDirection: "column", gap: 8,
+          animation: "fadeIn 160ms var(--ease-quart)",
+        }}>
+          {a.description && (
+            <div style={{
+              fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 13,
+              color: "var(--muted)", lineHeight: 1.5,
+              maxWidth: "60ch",
+            }}>{a.description}</div>
+          )}
+          {!isQual && (
+            <div style={{ marginTop: 2 }}>
+              <input
+                type="range"
+                min={lo} max={hi} step={step}
+                value={Math.max(lo, Math.min(hi, value))}
+                onChange={e => {
+                  const n = parseFloat(e.target.value);
+                  if (Number.isFinite(n)) setAssumption(a.id, clamp(snap(n)));
+                }}
+                disabled={disabled}
+                aria-label={`${a.label} slider`}
+                style={{
+                  width: "100%", height: 4, cursor: "pointer",
+                  accentColor: "var(--ink-2)",
+                }}
+              />
+              {hasRange && (
+                <div style={{
+                  display: "flex", justifyContent: "space-between",
+                  fontFamily: "var(--mono)", fontSize: 10.5,
+                  color: "var(--muted-2)",
+                  fontVariantNumeric: "tabular-nums",
+                  marginTop: 2,
+                }}>
+                  <span>sceptical</span>
+                  <span>champion</span>
+                </div>
+              )}
+            </div>
+          )}
+          {(a.source || a.rationale) && (
+            <div style={{
+              fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 12.5,
+              color: "var(--muted-2)", lineHeight: 1.5,
+              maxWidth: "60ch",
+            }}>
+              {a.rationale || a.source}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// OverrideAffordance — wraps a dollar figure to make it clickable as
+// a "set this directly" target. Renders a dotted underline + small
+// "set" tag when the value is currently overridden, so the buyer can
+// see at a glance which figures are computed and which are declared.
+const OverrideAffordance = ({ children, isOverridden, onClick, disabled, title }) => {
+  if (disabled || !onClick) return children;
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      title={title || (isOverridden ? "Manually set — click to edit or clear" : "Click to set this number directly")}
+      style={{
+        background: "transparent",
+        border: "none",
+        padding: 0, margin: 0,
+        font: "inherit",
+        color: "inherit",
+        cursor: "pointer",
+        display: "inline-flex",
+        alignItems: "baseline",
+        gap: 8,
+        borderBottom: isOverridden
+          ? "1px dotted var(--ink-2)"
+          : "1px dotted transparent",
+        transition: "border-color 160ms ease",
+      }}
+      onMouseEnter={e => {
+        if (!isOverridden) e.currentTarget.style.borderBottomColor = "var(--muted-2)";
+      }}
+      onMouseLeave={e => {
+        if (!isOverridden) e.currentTarget.style.borderBottomColor = "transparent";
+      }}
+    >
+      {children}
+      {isOverridden && (
+        <span style={{
+          fontFamily: "var(--sans)", fontSize: 10, fontWeight: 600,
+          letterSpacing: "0.06em", textTransform: "uppercase",
+          color: "var(--muted)",
+          padding: "2px 6px", borderRadius: 999,
+          background: "var(--surface-2)", border: "1px solid var(--line)",
+          alignSelf: "center",
+        }}>set</span>
+      )}
+    </button>
+  );
+};
+
+// EditorDrawer — bottom-docked panel that replaces the inline
+// expansion. The editor lives ABOVE the Total bar, which we hide
+// while open so the user always has the grand total in view at the
+// drawer's bottom edge. The page above stays scrollable; nothing
+// gets pushed around.
+//
+// Design rationale: when the buyer is changing an assumption, the
+// question they're asking is "how does that move the totals?" — so
+// the totals must stay visible. An inline expansion shoved them
+// off-screen; a bottom-docked drawer keeps the page intact.
+const EditorDrawer = ({ open, onClose, title, eyebrow, headlineValue, headlineNote, overrideValue, onOverrideChange, onClearOverride, isOverridden, children, grandTotalLabel, grandTotalValue, grandTotalAccent }) => {
+  // Close on Escape.
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  // Render via portal to <body> so the drawer's `position: fixed`
+  // anchors to the viewport rather than to an ancestor that happens
+  // to have a `filter` / `transform` / `will-change` rule (any of
+  // which would create a new containing block and re-anchor the
+  // drawer inside it).
+  return ReactDOM.createPortal((
+    <div style={{
+      position: "fixed", left: 0, right: 0, bottom: 0,
+      zIndex: 1100,
+      background: "var(--bg)",
+      borderTop: "1px solid var(--line-strong)",
+      boxShadow: "0 -16px 40px color-mix(in srgb, var(--ink) 12%, transparent)",
+      maxHeight: "70vh",
+      display: "flex", flexDirection: "column",
+      animation: "fadeIn 220ms var(--ease-quart)",
+    }}>
+    {/* Inner content constrained to the same column the page uses so
+        labels and inputs don't drift apart on wide screens. The
+        outer fixed shell keeps the shadow + border running across
+        the full viewport like a horizontal shelf. */}
+    <div style={{
+      width: "100%",
+      maxWidth: 1080,
+      margin: "0 auto",
+      display: "flex", flexDirection: "column",
+      flex: "1 1 auto",
+      minHeight: 0,
+    }}>
+      {/* Header — what's being edited, with the live value and a
+          close affordance. */}
+      <div style={{
+        padding: "16px 28px 12px",
+        borderBottom: "1px solid var(--line)",
+        display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+        gap: 16, flexWrap: "wrap",
+      }}>
+        <div style={{ minWidth: 0, flex: "1 1 auto" }}>
+          {eyebrow && (
+            <div style={{
+              fontFamily: "var(--sans)", fontSize: 11, fontWeight: 600,
+              letterSpacing: "0.08em", textTransform: "uppercase",
+              color: "var(--muted)",
+              marginBottom: 4,
+            }}>{eyebrow}</div>
+          )}
+          <div style={{
+            fontFamily: "var(--serif)", fontSize: 22, fontWeight: 500,
+            color: "var(--ink)", letterSpacing: "-0.015em",
+            lineHeight: 1.2,
+          }}>{title}</div>
+          {headlineNote && (
+            <div style={{
+              fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 13.5,
+              color: "var(--muted)", marginTop: 4, lineHeight: 1.45,
+              maxWidth: "60ch",
+            }}>{headlineNote}</div>
+          )}
+        </div>
+        <div style={{
+          display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6,
+        }}>
+          <div style={{
+            fontFamily: "var(--mono)", fontSize: 22, fontWeight: 700,
+            color: "var(--green-deep)",
+            fontVariantNumeric: "tabular-nums",
+            letterSpacing: "-0.01em",
+            opacity: isOverridden ? 1 : 0.9,
+          }}>{headlineValue}</div>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              background: "transparent",
+              border: "1px solid var(--line-strong)",
+              padding: "4px 12px", borderRadius: 999,
+              fontFamily: "var(--sans)", fontSize: 12, fontWeight: 600,
+              color: "var(--muted)", letterSpacing: "0.02em",
+              cursor: "pointer",
+            }}
+          >Close</button>
+        </div>
+      </div>
+
+      {/* Override editor — when this level accepts a direct override,
+          the editor sits prominently up top. The slider/assumption
+          editors live below it. */}
+      {onOverrideChange && (
+        <div style={{
+          padding: "18px 28px 6px",
+          display: "flex", alignItems: "baseline", gap: 14,
+          flexWrap: "wrap",
+        }}>
+          <div style={{
+            fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 14.5,
+            color: "var(--muted)", flex: "1 1 auto", minWidth: 200,
+            lineHeight: 1.5,
+          }}>
+            Or set this number directly, leaving the underlying
+            assumptions where they are:
+          </div>
+          <OverrideNumberInput
+            value={overrideValue}
+            onChange={onOverrideChange}
+          />
+          {isOverridden && (
+            <button
+              type="button"
+              onClick={onClearOverride}
+              style={{
+                background: "transparent",
+                border: "none",
+                padding: 0, margin: 0,
+                fontFamily: "var(--serif)", fontStyle: "italic",
+                fontSize: 13, color: "var(--muted)",
+                cursor: "pointer",
+                textDecoration: "underline",
+                textUnderlineOffset: 2,
+                textDecorationColor: "var(--line-strong)",
+              }}
+            >clear</button>
+          )}
+        </div>
+      )}
+
+      {/* Scrollable assumption / detail area. */}
+      <div style={{
+        padding: "8px 28px 16px",
+        overflowY: "auto",
+        flex: "1 1 auto",
+      }}>
+        {children}
+      </div>
+
+      {/* Mini Total — keeps the grand total in view while editing.
+          Typography echoes the page-level Total bar (big serif label,
+          large mono figure) so the drawer's footer feels like the
+          same artifact, not a separate strip. */}
+      {grandTotalValue != null && (
+        <div style={{
+          padding: "16px 28px",
+          borderTop: "1px solid var(--line-strong)",
+          display: "flex", alignItems: "baseline", justifyContent: "space-between",
+          gap: 16,
+        }}>
+          <div style={{
+            fontFamily: "var(--serif)", fontSize: 19, fontWeight: 500,
+            color: "var(--ink)",
+            letterSpacing: "-0.015em",
+            lineHeight: 1.15,
+          }}>{grandTotalLabel}</div>
+          <div style={{
+            fontFamily: "var(--serif)", fontSize: 26, fontWeight: 500,
+            color: grandTotalAccent || "var(--green-deep)",
+            fontVariantNumeric: "tabular-nums",
+            letterSpacing: "-0.02em",
+          }}>{grandTotalValue}</div>
+        </div>
+      )}
+    </div>
+    </div>
+  ), document.body);
+};
+
+// OverrideNumberInput — quiet inline number field for declaring a
+// value directly at item / category / section / total level. Accepts
+// shorthand like "200k", "1.5M". No clamping (consultant can declare
+// any number; this is the audit-trail-free path).
+const OverrideNumberInput = ({ value, onChange }) => {
+  // Display values in a clean shorthand when not focused — "127500"
+  // not "127500.000000000123". Once the user focuses the input,
+  // they get a fully editable string and can type whatever they
+  // want (including "200k" shorthand).
+  const fmtForEdit = (v) => {
+    if (v == null || !Number.isFinite(v)) return "";
+    const rounded = Math.round(v);
+    // If the underlying number is effectively whole, show it as an
+    // integer; otherwise show at most two decimal places.
+    if (Math.abs(v - rounded) < 1e-3) return String(rounded);
+    return v.toFixed(2).replace(/\.?0+$/, "");
+  };
+  const [text, setText] = React.useState(fmtForEdit(value));
+  const [focused, setFocused] = React.useState(false);
+  React.useEffect(() => {
+    if (!focused) setText(fmtForEdit(value));
+  }, [value, focused]);
+  const parse = (s) => {
+    const m = String(s).trim().match(/^(-?\d*\.?\d+)\s*([kmKMbB]?)$/);
+    if (!m) return NaN;
+    const n = parseFloat(m[1]);
+    const suf = m[2].toLowerCase();
+    const mult = suf === "k" ? 1e3 : suf === "m" ? 1e6 : suf === "b" ? 1e9 : 1;
+    return n * mult;
+  };
+  return (
+    <div style={{
+      display: "inline-flex", alignItems: "baseline",
+      border: `1px solid ${focused ? "var(--ink)" : "var(--line-strong)"}`,
+      background: "var(--bg)",
+      padding: "8px 14px",
+      transition: "border-color 120ms",
+      minWidth: 160,
+    }}>
+      <span style={{
+        fontFamily: "var(--mono)", fontSize: 16, color: "var(--muted)",
+        marginRight: 4,
+      }}>$</span>
+      <input
+        type="text" inputMode="decimal"
+        value={text}
+        placeholder="e.g. 200k"
+        onChange={e => {
+          setText(e.target.value);
+          const n = parse(e.target.value);
+          if (Number.isFinite(n)) onChange(n);
+        }}
+        onFocus={() => setFocused(true)}
+        onBlur={() => {
+          setFocused(false);
+          const n = parse(text);
+          if (!Number.isFinite(n)) setText(fmtForEdit(value));
+        }}
+        style={{
+          background: "transparent", border: "none", outline: "none",
+          fontFamily: "var(--mono)", fontSize: 16, fontWeight: 600,
+          color: "var(--ink)", letterSpacing: "-0.005em",
+          width: 120, padding: 0,
+        }}
+      />
+    </div>
+  );
+};
+
+const BenefitListItem = ({
+  item, model, tone, isActive, onSelect,
+  effectiveValue, isOverridden,
+}) => {
+  const pv = effectiveValue != null
+    ? effectiveValue
+    : ((model.perItem[item.id]?.grossPV) ?? 0);
+  const isQualitative = (item.benefitKind || "qualitative") === "qualitative";
+  const valueDisp = isQualitative
+    ? null
+    : (Math.abs(pv) >= 0.5 ? `+${fmtMoney(Math.abs(pv), { exact: true })}` : null);
+  const valueColor = tone === "bonus" ? "var(--muted)" : "var(--green-deep)";
+  const rowId = `benefit-detail-${item.id}`;
+  const head = (
+    <>
+      <div style={{
+        display: "flex", alignItems: "baseline", gap: 16,
+        flexWrap: "wrap",
+      }}>
+        <div style={{
+          fontFamily: "var(--serif)", fontSize: 17, fontWeight: 500,
+          color: "var(--ink)",
+          flex: "1 1 220px", minWidth: 0,
+          letterSpacing: "-0.005em",
+          lineHeight: 1.35,
+        }}>{item.name}</div>
+        {valueDisp != null && (
+          <div style={{
+            fontFamily: "var(--mono)", fontSize: 16, fontWeight: 600,
+            color: valueColor, whiteSpace: "nowrap",
+            fontVariantNumeric: "tabular-nums",
+            opacity: 0.5,
+            display: "inline-flex", alignItems: "baseline", gap: 8,
+            borderBottom: isOverridden
+              ? "1px dotted currentColor"
+              : "1px dotted transparent",
+          }}>
+            {valueDisp}
+            {isOverridden && (
+              <span style={{
+                fontFamily: "var(--sans)", fontSize: 10, fontWeight: 600,
+                letterSpacing: "0.06em", textTransform: "uppercase",
+                color: "var(--muted)", opacity: 1,
+                padding: "2px 6px", borderRadius: 999,
+                background: "var(--surface-2)", border: "1px solid var(--line)",
+              }}>set</span>
+            )}
+          </div>
+        )}
+      </div>
+      {item.desc && (
+        <div style={{
+          fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 14,
+          color: "var(--muted)", lineHeight: 1.55,
+          maxWidth: "65ch", marginTop: 5,
+        }}>{item.desc}</div>
+      )}
+    </>
+  );
+  return (
+    <div
+      id={rowId}
+      style={{
+        scrollMarginTop: 80,
+        borderBottom: "1px solid var(--line)",
+      }}
+    >
+      {onSelect ? (
+        <button
+          onClick={onSelect}
+          aria-pressed={isActive}
+          style={{
+            width: "100%",
+            background: isActive ? "var(--bg-soft)" : "transparent",
+            border: "none",
+            padding: "14px 0",
+            margin: 0,
+            textAlign: "left",
+            cursor: "pointer",
+            display: "block",
+            font: "inherit",
+            transition: "background 160ms ease",
+          }}
+          onMouseEnter={e => {
+            if (!isActive) e.currentTarget.style.background = "var(--bg-soft)";
+          }}
+          onMouseLeave={e => {
+            if (!isActive) e.currentTarget.style.background = "transparent";
+          }}
+        >{head}</button>
+      ) : (
+        <div style={{ padding: "14px 0" }}>{head}</div>
+      )}
+    </div>
+  );
+};
+
+// Editorial palette: opacity steps applied to a single accent color.
+// Index 0 (the most impactful item in the list) gets the strongest
+// tint; quieter contributors fade. Beyond 7 items we just floor at
+// the lightest step so nothing disappears entirely.
+const OPACITY_STOPS = [0.7, 0.55, 0.42, 0.32, 0.24, 0.18, 0.13];
+const opacityAt = (i) => OPACITY_STOPS[Math.min(i, OPACITY_STOPS.length - 1)];
+
+// FlowOverTime — small editorial bar chart. Each bar is split into
+// stacked segments, one per item, sharing a single accent color
+// across opacity steps so the family stays muted (no saturated
+// dashboard rainbow). Hovering a segment lifts it AND emits the
+// item id upward so the corresponding row in the table can highlight.
+const FlowOverTime = ({
+  items, model, horizon, accent, sign,
+  itemColors, hoveredId, setHoveredId,
+}) => {
+  if (!items || items.length === 0) return null;
+  if (!horizon || horizon < 1) return null;
+  // Skip items with zero cash flow (qualitative + zero-valued items).
+  const cashItems = items.filter(it => {
+    const series = model.perItem[it.id];
+    if (!series || !Array.isArray(series.cash)) return false;
+    return series.cash.some(v => Math.abs(v) >= 0.5);
+  });
+  if (cashItems.length === 0) return null;
+  // Year-by-year totals across all cash items.
+  const yearly = Array.from({ length: horizon }, (_, y) => {
+    let sum = 0;
+    cashItems.forEach(it => {
+      const v = model.perItem[it.id]?.cash?.[y] || 0;
+      sum += Math.abs(v);
+    });
+    return sum;
+  });
+  const max = Math.max(...yearly, 1);
+  if (yearly.every(v => v < 0.5)) return null;
+  const isDim = (id) => hoveredId && hoveredId !== id;
+  return (
+    <div style={{
+      marginTop: 24,
+      paddingTop: 18,
+      borderTop: "1px solid var(--line)",
+    }}>
+      <p style={{
+        fontFamily: "var(--sans)", fontSize: 11, fontWeight: 600,
+        letterSpacing: "0.08em", textTransform: "uppercase",
+        color: "var(--muted)", margin: "0 0 16px",
+      }}>Over time</p>
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: `repeat(${horizon}, 1fr)`,
+        columnGap: 14,
+        alignItems: "end",
+        height: 160,
+      }}>
+        {yearly.map((total, yi) => {
+          // Cap barH so label + bar fit inside the 160px cell. The
+          // label takes ~22px of vertical space; leave a few pixels
+          // of headroom so flex-end never overflows below the cell.
+          const barH = total < 0.5 ? 2 : Math.max(4, (total / max) * 130);
+          return (
+            <div key={yi} style={{
+              display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "flex-end",
+              height: "100%",
+            }}>
+              <div style={{
+                fontFamily: "var(--mono)", fontSize: 13, fontWeight: 600,
+                color: accent,
+                opacity: total < 0.5 ? 0.4 : 0.85,
+                marginBottom: 8,
+                fontVariantNumeric: "tabular-nums",
+                letterSpacing: "-0.005em",
+                whiteSpace: "nowrap",
+              }}>
+                {total < 0.5 ? "—" : `${sign}${fmtMoney(total, { exact: true })}`}
+              </div>
+              <div style={{
+                width: "100%",
+                maxWidth: 56,
+                height: barH,
+                // Column-reverse so iterating cashItems in impact-desc
+                // order stacks biggest at the bottom (visual gravity).
+                display: "flex", flexDirection: "column-reverse",
+                overflow: "hidden",
+              }}>
+                {cashItems.map(it => {
+                  const v = Math.abs(model.perItem[it.id]?.cash?.[yi] || 0);
+                  if (v < 0.5 || total < 0.5) return null;
+                  const segH = (v / total) * 100;
+                  const baseOp = (itemColors && itemColors[it.id]?.opacity) ?? 0.4;
+                  const dim = isDim(it.id);
+                  const hot = hoveredId === it.id;
+                  return (
+                    <div
+                      key={it.id}
+                      onMouseEnter={() => setHoveredId && setHoveredId(it.id)}
+                      onMouseLeave={() => setHoveredId && setHoveredId(null)}
+                      title={it.name}
+                      style={{
+                        height: `${segH}%`,
+                        background: accent,
+                        opacity: dim ? baseOp * 0.25 : (hot ? Math.min(baseOp + 0.25, 0.95) : baseOp),
+                        // Hairline gap between segments rendered as a
+                        // top border the colour of the page paper.
+                        borderTop: "1px solid var(--bg)",
+                        cursor: "default",
+                        transition: "opacity 160ms ease",
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {/* X-axis line as an explicit 1px block element. Sequential
+          block layout guarantees it sits BELOW the bars container
+          with no border-math or box-sizing surprises. */}
+      <div style={{
+        height: 1,
+        background: "var(--ink-2)",
+      }} />
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: `repeat(${horizon}, 1fr)`,
+        columnGap: 14,
+        paddingTop: 10,
+      }}>
+        {yearly.map((_, i) => (
+          <div key={i} style={{
+            fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 14,
+            color: "var(--muted)", textAlign: "center",
+            letterSpacing: "-0.005em",
+          }}>Year {i + 1}</div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ProportionStrip — two stacked rows of equal max-width.
+//   Row 1 is the "case" (costs + direct benefits) and fills 100%
+//   of the available width.
+//   Row 2 is the bonus (adjacent + downstream) on the same scale, so
+//   it visually reads as "extra" — a shorter bar sitting beneath the
+//   case, comparable in length to the row above.
+// Together the two rows answer "how do costs, direct, and bonus
+// compare" without needing a shared Y-axis on the over-time charts.
+const ProportionStrip = ({ costsValue, directValue, bonusValue, onJump }) => {
+  const c = Math.max(0, costsValue || 0);
+  const d = Math.max(0, directValue || 0);
+  const b = Math.max(0, bonusValue || 0);
+  const caseTotal = c + d;
+  if (caseTotal < 0.5) return null;
+  const showCosts = c >= 0.5;
+  const showBonus = b >= 0.5;
+  const costsPct = (c / caseTotal) * 100;
+  const directPct = (d / caseTotal) * 100;
+  // Bonus is sized on the SAME scale as the case row, so it appears
+  // shorter than row 1 unless bonus actually exceeds the case.
+  const bonusPctOfCase = Math.min((b / caseTotal) * 100, 100);
+  // Hover-isolation: the hovered segment lifts (brightens) while all
+  // other segments dim. Same pattern as the FlowOverTime bar chart
+  // so the proportion strip behaves consistently with it.
+  const [hoveredKey, setHoveredKey] = React.useState(null);
+  const segOpacity = (key, base) => {
+    if (hoveredKey == null) return base;
+    if (hoveredKey === key) return Math.min(base + 0.25, 0.95);
+    return base * 0.25;
+  };
+  const labelOpacity = (key) => {
+    if (hoveredKey == null) return 1;
+    if (hoveredKey === key) return 1;
+    return 0.35;
+  };
+  const labelStyle = {
+    fontFamily: "var(--sans)", fontSize: 10, fontWeight: 600,
+    letterSpacing: "0.1em", textTransform: "uppercase",
+    color: "var(--muted)",
+    lineHeight: 1.2,
+  };
+  const valueStyle = {
+    fontFamily: "var(--mono)", fontSize: 13, fontWeight: 600,
+    color: "var(--ink-2)",
+    fontVariantNumeric: "tabular-nums",
+    letterSpacing: "-0.005em",
+    marginTop: 2,
+  };
+  const rowBgStyle = {
+    display: "flex",
+    height: 14,
+    background: "color-mix(in srgb, var(--ink) 4%, transparent)",
+  };
+  // Click + hover affordance: each segment is a button that jumps on
+  // click and broadcasts hover state on enter/leave so the strip can
+  // emphasise the hovered region while quieting the others.
+  const SegmentLink = ({ targetKey, width, children, ariaLabel }) => (
+    <button
+      type="button"
+      onClick={onJump ? () => onJump(targetKey) : undefined}
+      onMouseEnter={() => setHoveredKey(targetKey)}
+      onMouseLeave={() => setHoveredKey(null)}
+      onFocus={() => setHoveredKey(targetKey)}
+      onBlur={() => setHoveredKey(null)}
+      aria-label={ariaLabel}
+      style={{
+        width: `${width}%`,
+        background: "transparent",
+        border: "none",
+        padding: 0, margin: 0,
+        textAlign: "left",
+        cursor: onJump ? "pointer" : "default",
+        font: "inherit",
+        display: "block",
+      }}
+    >
+      {children}
+    </button>
+  );
+  return (
+    <div style={{ marginTop: 36, marginBottom: 8 }}>
+      {/* Row 1 — the case (costs + direct benefits = 100%). */}
+      <div style={rowBgStyle}>
+        {showCosts && (
+          <SegmentLink targetKey="costs" width={costsPct} ariaLabel="Jump to Costs">
+            <div style={{
+              width: "100%",
+              height: 14,
+              background: "var(--red-deep)",
+              opacity: segOpacity("costs", 0.55),
+              transition: "opacity 160ms ease",
+            }} />
+          </SegmentLink>
+        )}
+        <SegmentLink targetKey="benefits" width={directPct} ariaLabel="Jump to Direct benefits">
+          <div style={{
+            width: "100%",
+            height: 14,
+            background: "var(--green-deep)",
+            opacity: segOpacity("benefits", 0.55),
+            marginLeft: showCosts ? 1 : 0,
+            transition: "opacity 160ms ease",
+          }} />
+        </SegmentLink>
+      </div>
+      <div style={{ display: "flex", marginTop: 8 }}>
+        {showCosts && (
+          <SegmentLink targetKey="costs" width={costsPct} ariaLabel="Jump to Costs">
+            <div style={{
+              display: "flex", flexDirection: "column",
+              alignItems: "flex-start", paddingLeft: 6,
+              minWidth: 0,
+              opacity: labelOpacity("costs"),
+              transition: "opacity 160ms ease",
+            }}>
+              <div style={labelStyle}>Costs</div>
+              <div style={valueStyle}>−{fmtMoney(c, { exact: true })}</div>
+            </div>
+          </SegmentLink>
+        )}
+        <SegmentLink targetKey="benefits" width={directPct} ariaLabel="Jump to Direct benefits">
+          <div style={{
+            display: "flex", flexDirection: "column",
+            alignItems: "flex-start", paddingLeft: 6,
+            minWidth: 0,
+            opacity: labelOpacity("benefits"),
+            transition: "opacity 160ms ease",
+          }}>
+            <div style={labelStyle}>Direct benefits</div>
+            <div style={valueStyle}>+{fmtMoney(d, { exact: true })}</div>
+          </div>
+        </SegmentLink>
+      </div>
+
+      {/* Row 2 — bonus, separate, on the same scale as row 1. */}
+      {showBonus && (
+        <div style={{ marginTop: 22 }}>
+          <div style={rowBgStyle}>
+            <SegmentLink targetKey="bonus" width={bonusPctOfCase} ariaLabel="Show bonus benefits">
+              <div style={{
+                width: "100%",
+                height: 14,
+                background: "var(--green-deep)",
+                opacity: segOpacity("bonus", 0.22),
+                transition: "opacity 160ms ease",
+              }} />
+            </SegmentLink>
+          </div>
+          <div style={{ display: "flex", marginTop: 8 }}>
+            <SegmentLink targetKey="bonus" width={bonusPctOfCase} ariaLabel="Show bonus benefits">
+              <div style={{
+                display: "flex", flexDirection: "column",
+                alignItems: "flex-start", paddingLeft: 6,
+                minWidth: 0,
+                opacity: labelOpacity("bonus"),
+                transition: "opacity 160ms ease",
+              }}>
+                <div style={{ ...labelStyle, opacity: 0.75 }}>Bonus</div>
+                <div style={{ ...valueStyle, color: "var(--muted)" }}>
+                  +{fmtMoney(b, { exact: true })}
+                </div>
+              </div>
+            </SegmentLink>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ScopeView — wraps a ScopeSummary + (optional) FlowOverTime pair
+// for a single scope. Owns the shared hoveredId state so mousing
+// over a table row highlights its bar segments and vice versa. Also
+// computes the per-item opacity palette once so both sides agree on
+// the colour for each item. `showChart` defaults to true; pass false
+// for the bonus sections, which are kept as summary-only.
+const ScopeView = (props) => {
+  const { items, model, accent, showChart = true } = props;
+  const [hoveredId, setHoveredId] = React.useState(null);
+  const cashItems = items.filter(it => {
+    const series = model.perItem[it.id];
+    if (!series || !Array.isArray(series.cash)) return false;
+    return series.cash.some(v => Math.abs(v) >= 0.5);
+  });
+  const sortedCash = cashItems.slice().sort((a, b) => {
+    const av = (model.perItem[a.id]?.cash || []).reduce((s, x) => s + Math.abs(x), 0);
+    const bv = (model.perItem[b.id]?.cash || []).reduce((s, x) => s + Math.abs(x), 0);
+    return bv - av;
+  });
+  const itemColors = {};
+  sortedCash.forEach((it, i) => {
+    itemColors[it.id] = { accent, opacity: opacityAt(i) };
+  });
+  return (
+    <div>
+      <ScopeSummary
+        {...props}
+        itemColors={itemColors}
+        hoveredId={hoveredId}
+        setHoveredId={setHoveredId}
+      />
+      {showChart && (
+        <FlowOverTime
+          items={sortedCash}
+          model={model}
+          horizon={props.horizon}
+          accent={accent}
+          sign={props.valuePrefix === "−" ? "−" : "+"}
+          itemColors={itemColors}
+          hoveredId={hoveredId}
+          setHoveredId={setHoveredId}
+        />
+      )}
+    </div>
+  );
+};
+
+// ScopeSummary — single compact surface for a scope (Direct / Adjacent
+// / Downstream) or for the Costs section. Replaces the previous
+// grouped-by-type detail table on the web view. Renders one row per
+// item: name on the left, value on the right, clickable to open the
+// editor drawer. The full detail (descriptions, type groupings, math
+// chains) lives in the PDF export, not on the page — the web is for
+// at-a-glance navigation; the report is for reading.
+const ScopeSummary = ({
+  items, model, title, totalPV, totalAccent, tone, titleSize, valuePrefix,
+  activeId, onItemClick,
+  effectiveItemValue, isItemOverridden,
+  isSectionOverridden, onSectionClick,
+  viewOnly,
+  itemColors, hoveredId, setHoveredId,
+}) => {
+  const TYPE_ORDER = ["revenue_uplift", "cost_saving", "qualitative"];
+  // Sort: bigger-impact dollar rows first within each kind, qualitative last.
+  const sorted = items.slice().sort((a, b) => {
+    const ak = TYPE_ORDER.indexOf(a.benefitKind || "qualitative");
+    const bk = TYPE_ORDER.indexOf(b.benefitKind || "qualitative");
+    if (ak !== bk) return ak - bk;
+    const av = effectiveItemValue ? effectiveItemValue(a) : ((model.perItem[a.id]?.grossPV) ?? 0);
+    const bv = effectiveItemValue ? effectiveItemValue(b) : ((model.perItem[b.id]?.grossPV) ?? 0);
+    return Math.abs(bv) - Math.abs(av);
+  });
+  const sign = valuePrefix === "−" ? "−" : "+";
+  const accent = totalAccent
+    || (valuePrefix === "−" ? "var(--red-deep)" : "var(--green-deep)");
+  return (
+    <section>
+      <header style={{
+        display: "flex", alignItems: "baseline", justifyContent: "space-between",
+        gap: 16, paddingBottom: 12, marginBottom: 4,
+        borderBottom: "1px solid var(--line-strong)",
+        flexWrap: "wrap",
+      }}>
+        <h3 style={{
+          fontFamily: "var(--serif)", fontSize: titleSize || 26, fontWeight: 500,
+          color: tone === "bonus" ? "var(--ink-2)" : "var(--ink)",
+          letterSpacing: "-0.015em", margin: 0,
+          lineHeight: 1.2,
+        }}>{title}</h3>
+        {totalPV != null && Math.abs(totalPV) >= 0.5 && (
+          <OverrideAffordance
+            isOverridden={!!isSectionOverridden}
+            onClick={onSectionClick}
+            disabled={viewOnly}
+            title={isSectionOverridden
+              ? `${title} total set directly — click to edit or clear`
+              : `Click to set ${title.toLowerCase()} directly`}
+          >
+            <span style={{
+              fontFamily: "var(--mono)", fontSize: 24, fontWeight: 700,
+              color: accent,
+              fontVariantNumeric: "tabular-nums",
+              letterSpacing: "-0.01em",
+            }}>{sign}{fmtMoney(Math.abs(totalPV), { exact: true })}</span>
+          </OverrideAffordance>
+        )}
+      </header>
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {sorted.map(item => {
+          const pv = effectiveItemValue ? effectiveItemValue(item) : ((model.perItem[item.id]?.grossPV) ?? 0);
+          // Cost items always carry a dollar value (no qualitative
+          // costs). For benefits, qualitative items have no dollar.
+          const isQual = item.kind === "cost"
+            ? false
+            : (item.benefitKind || "qualitative") === "qualitative";
+          const valueDisp = isQual
+            ? null
+            : (Math.abs(pv) >= 0.5 ? `${sign}${fmtMoney(Math.abs(pv), { exact: true })}` : null);
+          const overridden = isItemOverridden && isItemOverridden(item.id);
+          const active = activeId === item.id;
+          const swatch = itemColors && itemColors[item.id];
+          const isHot = hoveredId === item.id;
+          const isOtherHot = hoveredId && hoveredId !== item.id;
+          return (
+            <button
+              key={item.id}
+              onClick={onItemClick ? () => onItemClick(item.id) : undefined}
+              onMouseEnter={() => setHoveredId && setHoveredId(item.id)}
+              onMouseLeave={() => setHoveredId && setHoveredId(null)}
+              aria-pressed={active}
+              style={{
+                width: "100%",
+                background: (active || isHot) ? "var(--bg-soft)" : "transparent",
+                border: "none",
+                padding: "9px 8px", margin: 0,
+                textAlign: "left",
+                cursor: onItemClick ? "pointer" : "default",
+                display: "flex", alignItems: "baseline", justifyContent: "space-between",
+                gap: 16,
+                borderBottom: "1px solid var(--line)",
+                font: "inherit",
+                opacity: isOtherHot ? 0.45 : 1,
+                transition: "background 120ms ease, opacity 120ms ease",
+              }}
+            >
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 10,
+                flex: "1 1 auto", minWidth: 0,
+              }}>
+                {/* Per-item color swatch — same accent + opacity the
+                    matching bar segment uses, so the eye can map a
+                    row to its slice in any year's stack. Qualitative
+                    items have no swatch (they don't carry cash). */}
+                <span
+                  aria-hidden
+                  style={{
+                    flex: "0 0 auto",
+                    width: 9, height: 9, borderRadius: 999,
+                    background: swatch ? swatch.accent : "transparent",
+                    opacity: swatch ? swatch.opacity : 0,
+                    border: swatch ? "none" : "1px dashed var(--line-strong)",
+                  }}
+                />
+                <span style={{
+                  fontFamily: "var(--serif)", fontSize: 16,
+                  color: "var(--ink)", letterSpacing: "-0.005em",
+                  lineHeight: 1.35,
+                  flex: "1 1 auto", minWidth: 0,
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>{item.name}</span>
+              </span>
+              {valueDisp != null ? (
+                <span style={{
+                  display: "inline-flex", alignItems: "baseline", gap: 8,
+                  fontFamily: "var(--mono)", fontSize: 15, fontWeight: 600,
+                  color: accent,
+                  fontVariantNumeric: "tabular-nums",
+                  opacity: 0.65,
+                  borderBottom: overridden ? "1px dotted currentColor" : "1px dotted transparent",
+                  whiteSpace: "nowrap",
+                }}>
+                  {valueDisp}
+                  {overridden && (
+                    <span style={{
+                      fontFamily: "var(--sans)", fontSize: 10, fontWeight: 600,
+                      letterSpacing: "0.06em", textTransform: "uppercase",
+                      color: "var(--muted)", opacity: 1,
+                      padding: "1px 6px", borderRadius: 999,
+                      background: "var(--surface-2)", border: "1px solid var(--line)",
+                    }}>set</span>
+                  )}
+                </span>
+              ) : (
+                <span style={{
+                  fontFamily: "var(--sans)", fontSize: 12,
+                  color: "var(--muted-2)", fontStyle: "italic",
+                  whiteSpace: "nowrap",
+                }}>qualitative</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+};
+
+// TOC band — bird's-eye name+value list at the top of a scope block.
+// One line per item, no descriptions, click jumps to (and expands) the
+// detail row below. Single column, no grouping by type — the buyer's
+// first read needs to see every item the case rests on without traversing
+// three subheads first.
+const ToCBand = ({ items, model, tone, onJump }) => {
+  if (!items || items.length === 0) return null;
+  return (
+    <div style={{
+      marginBottom: 28,
+      paddingBottom: 22,
+      borderBottom: "1px solid var(--line)",
+    }}>
+      <p style={{
+        fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 13,
+        color: "var(--muted)", letterSpacing: "0.01em",
+        margin: "0 0 10px",
+      }}>At a glance</p>
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {items.map(item => {
+          const pv = (model.perItem[item.id]?.grossPV) ?? 0;
+          const isQual = (item.benefitKind || "qualitative") === "qualitative";
+          const valueDisp = isQual
+            ? null
+            : (Math.abs(pv) >= 0.5 ? `+${fmtMoney(Math.abs(pv), { exact: true })}` : null);
+          return (
+            <button
+              key={item.id}
+              onClick={() => onJump && onJump(item.id)}
+              style={{
+                background: "transparent", border: "none",
+                padding: "5px 0", margin: 0,
+                font: "inherit", textAlign: "left",
+                cursor: onJump ? "pointer" : "default",
+                display: "flex", justifyContent: "space-between",
+                alignItems: "baseline", gap: 16,
+                width: "100%",
+                borderRadius: 3,
+                transition: "color 120ms ease",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.color = "var(--ink)"; }}
+              onMouseLeave={e => { e.currentTarget.style.color = ""; }}
+            >
+              <span style={{
+                fontFamily: "var(--serif)", fontSize: 15,
+                color: "var(--ink-2)", letterSpacing: "-0.005em",
+                lineHeight: 1.4,
+              }}>{item.name}</span>
+              {valueDisp != null && (
+                <span style={{
+                  fontFamily: "var(--mono)", fontSize: 14, fontWeight: 500,
+                  color: tone === "bonus" ? "var(--muted)" : "var(--green-deep)",
+                  fontVariantNumeric: "tabular-nums",
+                  whiteSpace: "nowrap",
+                  // Same item-level transparency as the detail rows below.
+                  opacity: 0.5,
+                }}>{valueDisp}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+const ScopeBlock = ({
+  items, model,
+  title, subtitle, totalPV, totalAccent, tone, titleSize,
+  activeId, onItemClick,
+  effectiveItemValue, effectiveCategoryTotal,
+  isItemOverridden, isCategoryOverridden, isSectionOverridden,
+  onSectionClick, onCategoryClick,
+  viewOnly,
+}) => {
+  const TYPE_ORDER = [
+    { kind: "revenue_uplift", label: "Revenue uplift" },
+    { kind: "cost_saving",    label: "Cost savings" },
+    { kind: "qualitative",    label: "Qualitative wins" },
+  ];
+  const groups = TYPE_ORDER.map(({ kind, label }) => ({
+    kind, label,
+    rows: items.filter(i => (i.benefitKind || "qualitative") === kind),
+  })).filter(g => g.rows.length > 0);
+
+  const sumGroup = (rows) => rows
+    .filter(r => (r.benefitKind || "qualitative") !== "qualitative")
+    .reduce((s, r) => s + (model.perItem[r.id]?.grossPV ?? 0), 0);
+
+  return (
+    <section>
+      <header style={{ marginBottom: 18 }}>
+        <div style={{
+          display: "flex", alignItems: "baseline", justifyContent: "space-between",
+          gap: 16, marginBottom: subtitle ? 8 : 0,
+          flexWrap: "wrap",
+        }}>
+          <h3 style={{
+            fontFamily: "var(--serif)", fontSize: titleSize || 26, fontWeight: 500,
+            color: tone === "bonus" ? "var(--ink-2)" : "var(--ink)",
+            letterSpacing: "-0.015em", margin: 0,
+            lineHeight: 1.2,
+            maxWidth: tone === "bonus" ? "30ch" : undefined,
+          }}>{title}</h3>
+          {totalPV != null && Math.abs(totalPV) >= 0.5 && (
+            <OverrideAffordance
+              isOverridden={!!isSectionOverridden}
+              onClick={onSectionClick}
+              disabled={viewOnly}
+              title={isSectionOverridden
+                ? "Section total set directly — click to edit or clear"
+                : "Click to set this section total directly"}
+            >
+              <span style={{
+                fontFamily: "var(--mono)", fontSize: 24, fontWeight: 700,
+                color: totalAccent || "var(--green-deep)",
+                fontVariantNumeric: "tabular-nums",
+                letterSpacing: "-0.01em",
+                opacity: 1,
+              }}>+{fmtMoney(totalPV, { exact: true })}</span>
+            </OverrideAffordance>
+          )}
+        </div>
+        {subtitle && (
+          <p style={{
+            fontFamily: "var(--serif)", fontStyle: "italic",
+            fontSize: 15.5, color: "var(--muted)", margin: 0,
+            maxWidth: "58ch", lineHeight: 1.5,
+          }}>{subtitle}</p>
+        )}
+      </header>
+
+      {groups.map(({ kind, label, rows }, gi) => {
+        const isQual = kind === "qualitative";
+        const computedSum = sumGroup(rows);
+        const categoryEff = effectiveCategoryTotal
+          ? effectiveCategoryTotal(kind, rows)
+          : computedSum;
+        const groupSum = categoryEff;
+        const showGroupSum = !isQual && Math.abs(groupSum) >= 0.5;
+        const catOverridden = isCategoryOverridden && isCategoryOverridden(kind);
+        // Hierarchy fix: the eyebrow-caps treatment made the subheads
+        // visually lighter than the 17px serif item names beneath
+        // them, so the three groups dissolved into one wall. Subheads
+        // are now serif at 20px (between section h3 at 22–26px and
+        // item names at 17px), with a stronger border above each new
+        // group and more vertical air separating them.
+        return (
+          <div key={kind} style={{
+            marginTop: gi === 0 ? 28 : 40,
+            paddingTop: 16,
+            borderTop: "1px solid var(--line-strong)",
+          }}>
+            <div style={{
+              display: "flex", alignItems: "baseline", justifyContent: "space-between",
+              gap: 16, marginBottom: 8,
+              flexWrap: "wrap",
+            }}>
+              <h4 style={{
+                fontFamily: "var(--serif)", fontSize: 20, fontWeight: 500,
+                color: "var(--ink)", letterSpacing: "-0.01em",
+                margin: 0, lineHeight: 1.25,
+              }}>{label}</h4>
+              {showGroupSum && (
+                <OverrideAffordance
+                  isOverridden={catOverridden}
+                  onClick={onCategoryClick ? () => onCategoryClick(kind) : undefined}
+                  disabled={viewOnly}
+                  title={catOverridden
+                    ? "Category total set directly — click to edit or clear"
+                    : "Click to set this category total directly"}
+                >
+                  <span style={{
+                    fontFamily: "var(--mono)", fontSize: 17, fontWeight: 600,
+                    color: tone === "bonus" ? "var(--muted)" : "var(--green-deep)",
+                    fontVariantNumeric: "tabular-nums",
+                    opacity: 0.7,
+                  }}>+{fmtMoney(groupSum, { exact: true })}</span>
+                </OverrideAffordance>
+              )}
+              {isQual && (
+                <div style={{
+                  fontFamily: "var(--sans)", fontSize: 13,
+                  color: "var(--muted)",
+                  fontStyle: "italic",
+                }}>{rows.length} {rows.length === 1 ? "benefit" : "benefits"}</div>
+              )}
+            </div>
+            {rows.map(item => (
+              <BenefitListItem
+                key={item.id} item={item} model={model} tone={tone}
+                isActive={activeId === item.id}
+                onSelect={onItemClick ? () => onItemClick(item.id) : undefined}
+                effectiveValue={effectiveItemValue ? effectiveItemValue(item) : undefined}
+                isOverridden={isItemOverridden && isItemOverridden(item.id)}
+              />
+            ))}
+          </div>
+        );
+      })}
+    </section>
+  );
+};
+
+const BenefitsListing = ({
+  items, model, assumptions, A, setAssumption, viewOnly, horizon,
+  levelOverrides, setLevelOverride,
+  grandTotalLabel, grandTotalValue, grandTotalAccent,
+  showBonus, setShowBonus,
+}) => {
+  // Drawer state: which "thing" is being edited.
+  // shape: { kind: "item"|"category"|"section", id?: string, scope?: number, catKind?: string }
+  const [editing, setEditing] = React.useState(null);
+
+  const byScope = (sc) => items.filter(i => {
+    const s = [1,2,3].includes(i.scope) ? i.scope : 1;
+    return s === sc;
+  });
+  const direct = byScope(1);
+  const adjacent = byScope(2);
+  const downstream = byScope(3);
+
+  // ---- Override helpers (item < category < section, all rolling up) ----
+  const itemOv = levelOverrides?.item || {};
+  const catOv = levelOverrides?.cat || {};
+  const sectionOv = levelOverrides?.section || {};
+
+  const effectiveItemValue = React.useCallback((it) => {
+    if (it.id in itemOv) return itemOv[it.id];
+    return (model.perItem[it.id]?.grossPV) ?? 0;
+  }, [itemOv, model]);
+  const isItemOverridden = React.useCallback((id) => id in itemOv, [itemOv]);
+
+  const sumGroup = (rows) => rows
+    .filter(r => (r.benefitKind || "qualitative") !== "qualitative")
+    .reduce((s, r) => s + effectiveItemValue(r), 0);
+
+  // Category key: `${scope}_${kind}`.
+  const catKey = (scope, kind) => `${scope}_${kind}`;
+  const effectiveCategoryTotal = (scope, kind, rows) => {
+    const k = catKey(scope, kind);
+    if (k in catOv) return catOv[k];
+    return sumGroup(rows);
+  };
+  const isCategoryOverridden = (scope, kind) => catKey(scope, kind) in catOv;
+
+  const KINDS = ["revenue_uplift", "cost_saving", "qualitative"];
+  const effectiveSectionTotal = (scope, scopeItems) => {
+    if (scope in sectionOv) return sectionOv[scope];
+    let total = 0;
+    KINDS.forEach(k => {
+      if (k === "qualitative") return;
+      const rows = scopeItems.filter(i => (i.benefitKind || "qualitative") === k);
+      total += effectiveCategoryTotal(scope, k, rows);
+    });
+    return total;
+  };
+  const isSectionOverridden = (scope) => scope in sectionOv;
+
+  const directTotal = effectiveSectionTotal(1, direct);
+  const bonusTotal = effectiveSectionTotal(2, adjacent) + effectiveSectionTotal(3, downstream);
+  const hasBonus = adjacent.length > 0 || downstream.length > 0;
+
+  const selectItem = React.useCallback((id) => {
+    setEditing(prev => (prev && prev.kind === "item" && prev.id === id) ? null : { kind: "item", id });
+  }, []);
+  const selectCategory = (scope) => (catKind) => {
+    setEditing({ kind: "category", scope, catKind });
+  };
+  const selectSection = (scope) => () => {
+    setEditing({ kind: "section", scope });
+  };
+  const jumpToItem = React.useCallback((id) => {
+    setEditing({ kind: "item", id });
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`benefit-detail-${id}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, []);
+
+  // Resolve the "thing being edited" into a concrete editor payload for
+  // the drawer. Looked up at render time so the headline values
+  // reflect live changes.
+  const drawerPayload = (() => {
+    if (!editing) return null;
+    if (editing.kind === "item") {
+      const item = items.find(i => i.id === editing.id);
+      if (!item) return null;
+      const value = effectiveItemValue(item);
+      const overridden = isItemOverridden(item.id);
+      return {
+        title: item.name,
+        eyebrow: "Editing item",
+        headlineValue: `+${fmtMoney(Math.abs(value), { exact: true })}`,
+        headlineNote: item.desc,
+        isOverridden: overridden,
+        overrideValue: overridden ? itemOv[item.id] : value,
+        onOverrideChange: (v) => setLevelOverride("item", item.id, v),
+        onClearOverride: overridden ? () => setLevelOverride("item", item.id, null) : undefined,
+        item,
+      };
+    }
+    if (editing.kind === "category") {
+      const { scope, catKind } = editing;
+      const scopeItems = byScope(scope);
+      const rows = scopeItems.filter(i => (i.benefitKind || "qualitative") === catKind);
+      const value = effectiveCategoryTotal(scope, catKind, rows);
+      const overridden = isCategoryOverridden(scope, catKind);
+      const labelMap = {
+        revenue_uplift: "Revenue uplift",
+        cost_saving: "Cost savings",
+        qualitative: "Qualitative wins",
+      };
+      const scopeLabel = scope === 1 ? "Direct" : scope === 2 ? "Adjacent" : "Downstream";
+      return {
+        title: `${labelMap[catKind] || catKind}`,
+        eyebrow: `Editing category · ${scopeLabel}`,
+        headlineValue: `+${fmtMoney(Math.abs(value), { exact: true })}`,
+        headlineNote: "Setting a category total bypasses the item-level numbers in this category. Existing item-level edits stay where they are.",
+        isOverridden: overridden,
+        overrideValue: overridden ? catOv[catKey(scope, catKind)] : value,
+        onOverrideChange: (v) => setLevelOverride("cat", catKey(scope, catKind), v),
+        onClearOverride: overridden ? () => setLevelOverride("cat", catKey(scope, catKind), null) : undefined,
+        rows,
+      };
+    }
+    if (editing.kind === "section") {
+      const { scope } = editing;
+      const scopeItems = byScope(scope);
+      const value = effectiveSectionTotal(scope, scopeItems);
+      const overridden = isSectionOverridden(scope);
+      const scopeLabel = scope === 1 ? "Direct benefits" : scope === 2 ? "Adjacent benefits" : "Downstream benefits";
+      return {
+        title: scopeLabel,
+        eyebrow: "Editing section",
+        headlineValue: `+${fmtMoney(Math.abs(value), { exact: true })}`,
+        headlineNote: "Setting this section total bypasses every category and item underneath. Their values stay set in case you clear this override.",
+        isOverridden: overridden,
+        overrideValue: overridden ? sectionOv[scope] : value,
+        onOverrideChange: (v) => setLevelOverride("section", scope, v),
+        onClearOverride: overridden ? () => setLevelOverride("section", scope, null) : undefined,
+        scopeItems,
+      };
+    }
+    return null;
+  })();
+
+  return (
+    <div>
+      {/* Direct benefits — tight summary table over a small
+          stacked-by-item over-time chart. Both surfaces share a
+          hoveredId so mousing over a row tints the matching bar
+          segments (and vice versa). */}
+      <ScopeView
+        items={direct}
+        model={model}
+        horizon={horizon}
+        title="Direct benefits"
+        totalPV={directTotal}
+        accent="var(--green-deep)"
+        activeId={editing && editing.kind === "item" ? editing.id : null}
+        onItemClick={selectItem}
+        effectiveItemValue={effectiveItemValue}
+        isItemOverridden={isItemOverridden}
+        isSectionOverridden={isSectionOverridden(1)}
+        onSectionClick={selectSection(1)}
+        viewOnly={viewOnly}
+      />
+
+      {hasBonus && (
+        <div
+          data-landing-row="bonus"
+          style={{
+          marginTop: 40,
+          paddingTop: 28,
+          borderTop: "1px solid var(--line)",
+          scrollMarginTop: 80,
+        }}>
+          {/* Copy speaks to the tired non-technical buyer: state what
+              the bonus benefits ARE and why they're not in the total
+              above. No meta-commentary on the persuasion structure. */}
+          <p style={{
+            fontFamily: "var(--serif)",
+            fontSize: 16, color: "var(--ink-2)",
+            margin: "0 0 16px", maxWidth: "58ch", lineHeight: 1.6,
+          }}>
+            This project also produces other benefits we haven't
+            counted in the total above. They follow on from the
+            direct case.
+          </p>
+          <button
+            onClick={() => setShowBonus(s => !s)}
+            style={{
+              background: showBonus ? "var(--surface-2)" : "var(--surface)",
+              border: "1px solid var(--line-strong)",
+              padding: "8px 14px",
+              borderRadius: 999,
+              cursor: "pointer",
+              display: "inline-flex", alignItems: "center", gap: 8,
+              fontFamily: "var(--sans)", fontSize: 13, fontWeight: 600,
+              color: "var(--ink-2)", letterSpacing: "0.01em",
+              transition: "background 160ms ease, border-color 160ms ease",
+            }}
+          >
+            <span style={{
+              display: "inline-block",
+              transform: showBonus ? "rotate(90deg)" : "rotate(0deg)",
+              transition: "transform 220ms var(--ease-quart)",
+              fontFamily: "var(--mono)", fontSize: 12, lineHeight: 1,
+              color: "var(--muted)",
+            }}>▸</span>
+            {showBonus ? "Hide them" : "Show them"}
+            {!showBonus && Math.abs(bonusTotal) >= 0.5 && (
+              <span style={{
+                color: "var(--muted)", fontFamily: "var(--mono)",
+                fontWeight: 500, marginLeft: 4,
+                fontVariantNumeric: "tabular-nums",
+              }}>+{fmtMoney(bonusTotal, { exact: true })}</span>
+            )}
+          </button>
+
+          {showBonus && (
+            <div style={{
+              marginTop: 28,
+              animation: "fadeIn 320ms var(--ease-quart)",
+              display: "flex", flexDirection: "column", gap: 32,
+            }}>
+              {adjacent.length > 0 && (
+                <ScopeView
+                  items={adjacent} model={model}
+                  horizon={horizon}
+                  title="Other ways this changes how your business runs"
+                  totalPV={effectiveSectionTotal(2, adjacent)}
+                  totalAccent="var(--muted)"
+                  accent="var(--muted)"
+                  tone="bonus"
+                  titleSize={20}
+                  showChart={false}
+                  activeId={editing && editing.kind === "item" ? editing.id : null}
+                  onItemClick={selectItem}
+                  effectiveItemValue={effectiveItemValue}
+                  isItemOverridden={isItemOverridden}
+                  isSectionOverridden={isSectionOverridden(2)}
+                  onSectionClick={selectSection(2)}
+                  viewOnly={viewOnly}
+                />
+              )}
+              {downstream.length > 0 && (
+                <ScopeView
+                  items={downstream} model={model}
+                  horizon={horizon}
+                  title="Slower, longer-term effects"
+                  totalPV={effectiveSectionTotal(3, downstream)}
+                  totalAccent="var(--muted)"
+                  accent="var(--muted)"
+                  tone="bonus"
+                  titleSize={20}
+                  showChart={false}
+                  activeId={editing && editing.kind === "item" ? editing.id : null}
+                  onItemClick={selectItem}
+                  effectiveItemValue={effectiveItemValue}
+                  isItemOverridden={isItemOverridden}
+                  isSectionOverridden={isSectionOverridden(3)}
+                  onSectionClick={selectSection(3)}
+                  viewOnly={viewOnly}
+                />
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Bottom-docked editor drawer. Opens on item/category/section
+          click. Page content above stays where it is so the buyer
+          retains context (other items, totals) while editing. */}
+      <EditorDrawer
+        open={!!drawerPayload}
+        onClose={() => setEditing(null)}
+        title={drawerPayload?.title}
+        eyebrow={drawerPayload?.eyebrow}
+        headlineValue={drawerPayload?.headlineValue}
+        headlineNote={drawerPayload?.headlineNote}
+        isOverridden={!!drawerPayload?.isOverridden}
+        overrideValue={drawerPayload?.overrideValue}
+        onOverrideChange={drawerPayload?.onOverrideChange}
+        onClearOverride={drawerPayload?.onClearOverride}
+        grandTotalLabel={grandTotalLabel}
+        grandTotalValue={grandTotalValue}
+        grandTotalAccent={grandTotalAccent}
+      >
+        {drawerPayload?.item && (
+          <ItemAssumptionsPanel
+            item={drawerPayload.item}
+            assumptions={assumptions}
+            A={A} setAssumption={setAssumption}
+            viewOnly={viewOnly}
+          />
+        )}
+        {drawerPayload?.rows && (
+          <CategoryItemListPanel rows={drawerPayload.rows} model={model}
+            effectiveItemValue={effectiveItemValue}
+            isItemOverridden={isItemOverridden}
+            onItemClick={selectItem} />
+        )}
+        {drawerPayload?.scopeItems && (
+          <SectionItemListPanel scopeItems={drawerPayload.scopeItems}
+            model={model}
+            effectiveItemValue={effectiveItemValue}
+            isItemOverridden={isItemOverridden}
+            onItemClick={selectItem}
+            onCategoryClick={(kind) => {
+              // section→category: switch the drawer's focus
+              setEditing({ kind: "category", scope: editing.scope, catKind: kind });
+            }} />
+        )}
+      </EditorDrawer>
+    </div>
+  );
+};
+
+// ItemAssumptionsPanel — fills the drawer's body when an item is
+// selected. Lists each assumption that feeds the item's calculation,
+// with the slider + number editor we already use.
+const ItemAssumptionsPanel = ({ item, assumptions, A, setAssumption, viewOnly }) => {
+  const uses = Array.isArray(item.uses) ? item.uses : [];
+  const usedAssumptions = uses
+    .map(id => assumptions.find(a => a.id === id))
+    .filter(Boolean);
+  if (usedAssumptions.length === 0) {
+    return (
+      <p style={{
+        fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 14,
+        color: "var(--muted)", margin: "8px 0 0", maxWidth: "60ch",
+      }}>
+        This is a qualitative benefit. It doesn't carry a dollar figure
+        on its own; it shows up as part of the broader case.
+      </p>
+    );
+  }
+  return (
+    <div>
+      <p style={{
+        fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 13.5,
+        color: "var(--muted)",
+        margin: "10px 0 4px",
+        letterSpacing: "-0.005em",
+      }}>
+        Or move the underlying values:
+      </p>
+      {usedAssumptions.map(a => (
+        <AssumptionRow
+          key={a.id} a={a}
+          value={A && A[a.id] != null ? A[a.id] : a.value}
+          setAssumption={setAssumption}
+          disabled={viewOnly}
+        />
+      ))}
+    </div>
+  );
+};
+
+// CategoryItemListPanel — fills the drawer's body when a category is
+// selected. Lists the items in this category so the buyer can see
+// what gets bypassed if they set a category-level override.
+const CategoryItemListPanel = ({ rows, model, effectiveItemValue, isItemOverridden, onItemClick }) => (
+  <div>
+    <p style={{
+      fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 13.5,
+      color: "var(--muted)", margin: "4px 0 10px", maxWidth: "60ch",
+    }}>
+      Items in this category — tap one to edit it directly:
+    </p>
+    <div>
+      {rows.map(item => {
+        const pv = effectiveItemValue ? effectiveItemValue(item) : ((model.perItem[item.id]?.grossPV) ?? 0);
+        const isQual = (item.benefitKind || "qualitative") === "qualitative";
+        const val = isQual ? null : `+${fmtMoney(Math.abs(pv), { exact: true })}`;
+        const ov = isItemOverridden && isItemOverridden(item.id);
+        return (
+          <button key={item.id} onClick={() => onItemClick(item.id)} style={{
+            width: "100%", border: "none", background: "transparent",
+            borderBottom: "1px solid var(--line)",
+            padding: "10px 0", margin: 0, textAlign: "left",
+            display: "flex", alignItems: "baseline", justifyContent: "space-between",
+            gap: 12, cursor: "pointer", font: "inherit",
+          }}>
+            <span style={{
+              fontFamily: "var(--serif)", fontSize: 15, color: "var(--ink)",
+            }}>{item.name}</span>
+            {val && (
+              <span style={{
+                fontFamily: "var(--mono)", fontSize: 14, fontWeight: 600,
+                color: "var(--green-deep)", opacity: 0.6,
+                borderBottom: ov ? "1px dotted currentColor" : undefined,
+              }}>{val}</span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  </div>
+);
+
+// SectionItemListPanel — fills the drawer's body when a section is
+// selected. Shows the three category subtotals (Revenue uplift / Cost
+// savings / Qualitative). Clicking a category swaps the drawer focus.
+const SectionItemListPanel = ({ scopeItems, model, effectiveItemValue, isItemOverridden, onItemClick, onCategoryClick }) => {
+  const KINDS = [
+    { kind: "revenue_uplift", label: "Revenue uplift" },
+    { kind: "cost_saving", label: "Cost savings" },
+    { kind: "qualitative", label: "Qualitative wins" },
+  ];
+  return (
+    <div>
+      <p style={{
+        fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 13.5,
+        color: "var(--muted)", margin: "4px 0 12px", maxWidth: "60ch",
+      }}>
+        Categories in this section — tap to drill down:
+      </p>
+      <div>
+        {KINDS.map(({ kind, label }) => {
+          const rows = scopeItems.filter(i => (i.benefitKind || "qualitative") === kind);
+          if (rows.length === 0) return null;
+          const sum = rows
+            .filter(r => (r.benefitKind || "qualitative") !== "qualitative")
+            .reduce((s, r) => s + (effectiveItemValue ? effectiveItemValue(r) : ((model.perItem[r.id]?.grossPV) ?? 0)), 0);
+          const isQual = kind === "qualitative";
+          return (
+            <button key={kind} onClick={() => onCategoryClick(kind)} style={{
+              width: "100%", border: "none", background: "transparent",
+              borderBottom: "1px solid var(--line)",
+              padding: "12px 0", margin: 0, textAlign: "left",
+              display: "flex", alignItems: "baseline", justifyContent: "space-between",
+              gap: 12, cursor: "pointer", font: "inherit",
+            }}>
+              <span style={{
+                fontFamily: "var(--serif)", fontSize: 17, fontWeight: 500,
+                color: "var(--ink)",
+              }}>{label}</span>
+              {!isQual && Math.abs(sum) >= 0.5 ? (
+                <span style={{
+                  fontFamily: "var(--mono)", fontSize: 16, fontWeight: 600,
+                  color: "var(--green-deep)", opacity: 0.7,
+                }}>+{fmtMoney(sum, { exact: true })}</span>
+              ) : isQual ? (
+                <span style={{
+                  fontFamily: "var(--sans)", fontSize: 12, fontStyle: "italic",
+                  color: "var(--muted)",
+                }}>{rows.length} {rows.length === 1 ? "benefit" : "benefits"}</span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 // Tooltip-style estimate editor. Anchored adjacent to the clicked row
 // (positioned via getBoundingClientRect on the row's data-attribute).
 // A very light backdrop fade dims the rest of the page; the card itself
@@ -2536,25 +4491,20 @@ const CommitmentTargetRow = ({
   confirmable, confirmed, onToggleConfirm, confirmLabel,
 }) => {
   const accent = accentColor || "var(--green-deep)";
-  // Per-row description is progressive disclosure: visually hidden by
-  // default, revealed on hover or keyboard focus of the row. The text
-  // is always in the DOM (sr-only when hidden) so screen-reader users
-  // tabbing through the row reach it via aria-describedby.
-  const [showDesc, setShowDesc] = React.useState(false);
+  // Description is now always visible. Previously hover-only with an
+  // opacity transition, but that hides the buyer's-language legend
+  // from anyone reading on mobile (no hover) or screenshotting the
+  // page. The whole point of these rows is making each claim
+  // confirmable in the buyer's vocabulary; hiding the vocabulary
+  // until hover defeats the goal.
   const hasDesc = !!a.description;
   const descId = `desc-${a.id}`;
   return (
     <div
-      onMouseEnter={hasDesc ? () => setShowDesc(true) : undefined}
-      onMouseLeave={hasDesc ? () => setShowDesc(false) : undefined}
-      onFocus={hasDesc ? () => setShowDesc(true) : undefined}
-      onBlur={hasDesc ? (e) => {
-        if (!e.currentTarget.contains(e.relatedTarget)) setShowDesc(false);
-      } : undefined}
       style={{
-        display: "flex", alignItems: "center", gap: 12,
+        display: "flex", alignItems: "flex-start", gap: 12,
         paddingLeft: 15, paddingRight: 12,
-        paddingTop: 8, paddingBottom: 8,
+        paddingTop: 10, paddingBottom: 10,
         // A 1px hairline (under the side-stripe ban threshold) plus
         // an 8% wash gives the row a quiet architectural marker
         // without the version-control-diff aesthetic.
@@ -2589,17 +4539,10 @@ const CommitmentTargetRow = ({
         {hasDesc && (
           <span
             id={descId}
-            style={showDesc ? {
+            style={{
               fontFamily: "var(--serif)", fontStyle: "italic",
-              fontSize: 13.5, color: "var(--muted)",
-              lineHeight: 1.4,
-              animation: "fadeIn 160ms var(--ease-quart)",
-            } : {
-              // sr-only: in DOM and reachable via aria-describedby,
-              // invisible to sighted users until hover/focus reveals it.
-              position: "absolute", width: 1, height: 1,
-              padding: 0, margin: -1, overflow: "hidden",
-              clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0,
+              fontSize: 14, color: "var(--muted)",
+              lineHeight: 1.45,
             }}
           >{a.description}</span>
         )}
@@ -2725,22 +4668,15 @@ const AssumptionsTab = ({ visible, onClick }) => {
   );
 };
 
-// Full-page assumptions editor. Opens when the AssumptionsTab is clicked.
-// Lays out every assumption in two rhetorical sections (commitments first,
-// then world facts) so the contractable-vs-confirmable distinction stays
-// visible. Each row is a label + inline value editor; the underlying
-// `setAssumption` mechanism is shared with the per-benefit popovers.
-//
-// A scope picker (1 / 1-2 / 1-2-3) at the top filters the rows to only
-// those whose assumptions feed an item at or below the chosen scope.
-// Costs are always counted as scope-1 (they always sit in the load-bearing
-// case). Discount rate sits in every PV calculation so it's pinned.
-const AssumptionsGrid = ({ assumptions, items, A, setAssumption, viewOnly, confirmedAssumptions, onToggleConfirm, onClose }) => {
+// All-assumptions editor. Unified with the rest of the editorial
+// register: paper-on-paper (no surface card chrome, no shadow,
+// no backdrop blur, no rounded corners), each row is the same
+// compact AssumptionRow used in the per-item drawer, content
+// constrained to the same 1080px page column so labels and inputs
+// don't drift apart on wide screens. Verification checks removed —
+// the row-confirmation gating is no longer the discovery flow.
+const AssumptionsGrid = ({ assumptions, A, setAssumption, viewOnly, onClose }) => {
   const [shown, setShown] = React.useState(false);
-  // Always default to scope-1 — the load-bearing case is the reader's
-  // first port of call. They can dial it up via the picker if they want
-  // to see the bonus-upside assumptions too.
-  const [scopeFilter, setScopeFilter] = React.useState(1);
   React.useEffect(() => {
     const r = requestAnimationFrame(() => setShown(true));
     return () => cancelAnimationFrame(r);
@@ -2750,221 +4686,155 @@ const AssumptionsGrid = ({ assumptions, items, A, setAssumption, viewOnly, confi
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-
-  // Build assumption_id -> Set of scopes that reference it via item.uses.
-  // Costs and items without a recognised scope land at scope 1.
-  const usedInScopes = React.useMemo(() => {
-    const map = {};
-    for (const it of (items || [])) {
-      const sc = it.kind === "cost"
-        ? 1
-        : ([1, 2, 3].includes(it.scope) ? it.scope : 1);
-      for (const uid of (it.uses || [])) {
-        if (!map[uid]) map[uid] = new Set();
-        map[uid].add(sc);
-      }
-    }
-    return map;
-  }, [items]);
-
-  const matchesScope = (a) => {
-    // discount_rate isn't in any item's `uses` but it gates every PV
-    // calculation, so it's always relevant.
-    if (a.id === "discount_rate") return true;
-    const scopes = usedInScopes[a.id];
-    if (!scopes) return true; // orphaned — show so user can still edit
-    for (const s of scopes) if (s <= scopeFilter) return true;
-    return false;
-  };
-
-  const commitments = (assumptions || []).filter(a => a.controllable && matchesScope(a));
-  const worldFacts  = (assumptions || []).filter(a => !a.controllable && matchesScope(a));
-
-  const renderRow = (a, commitment) => {
-    const isConfirmed = !!(confirmedAssumptions && confirmedAssumptions[a.id]);
-    return (
-      <div
-        key={a.id}
-        style={{
-          display: "grid",
-          gridTemplateColumns: "minmax(0, 1.4fr) minmax(0, 1fr) 36px",
-          gap: 14, alignItems: "center",
-          padding: "10px 18px 10px 17px",
-          borderBottom: "1px solid var(--line)",
-          // Commitments get a faint green wash + 1px hairline marker
-          // — same "this is a promise" signal, no diff-bar aesthetic.
-          ...(commitment ? {
-            background: "color-mix(in srgb, var(--green-deep) 7%, transparent)",
-            borderLeft: "1px solid color-mix(in srgb, var(--green-deep) 35%, transparent)",
-          } : {}),
-          ...(isConfirmed ? {
-            background: "color-mix(in srgb, var(--green-deep) 5%, transparent)",
-          } : {}),
-          transition: "background 180ms ease",
-        }}
-      >
-        <div style={{ minWidth: 0 }}>
-          <div style={{
-            fontSize: 13, fontWeight: 500, color: "var(--ink)",
-            letterSpacing: "-0.005em",
-          }}>{a.label}</div>
-          {a.description && (
-            <div style={{
-              fontSize: 11.5, color: "var(--muted)", marginTop: 2, lineHeight: 1.45,
-            }}>{a.description}</div>
-          )}
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <InlineAssumptionEditor
-              a={a} value={A[a.id]}
-              onChange={v => setAssumption(a.id, v)}
-              disabled={viewOnly}
-            />
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={() => onToggleConfirm && onToggleConfirm(a.id)}
-          title={isConfirmed ? "Confirmed" : "Unconfirmed"}
-          aria-label={isConfirmed ? "Confirmed" : "Unconfirmed"}
-          aria-pressed={isConfirmed}
-          style={{
-            width: 26, height: 26, borderRadius: 999,
-            border: isConfirmed
-              ? "1px solid var(--green-deep)"
-              : "1px solid var(--line-strong)",
-            background: isConfirmed ? "var(--green-deep)" : "var(--surface)",
-            color: isConfirmed ? "#FFFFFF" : "var(--muted-2)",
-            display: "inline-flex", alignItems: "center", justifyContent: "center",
-            cursor: "pointer",
-            transition: "background 180ms ease, border-color 180ms ease, color 180ms ease",
-            padding: 0, lineHeight: 0,
-          }}
-        >
-          <IconCheck size={13} stroke={isConfirmed ? 2.6 : 1.8} />
-        </button>
-      </div>
-    );
-  };
-
-  return (
+  const all = assumptions || [];
+  const worldFacts  = all.filter(a => !a.controllable);
+  const commitments = all.filter(a => a.controllable);
+  return ReactDOM.createPortal((
     <div
       onClick={onClose}
       style={{
         position: "fixed", inset: 0, zIndex: 1200,
-        background: "rgba(0,0,0,0.18)",
-        backdropFilter: shown ? "blur(6px)" : "none",
-        WebkitBackdropFilter: shown ? "blur(6px)" : "none",
+        // A very subtle ink wash instead of a dark overlay + blur.
+        // Just enough to mark "you're in a focused mode" without
+        // turning the screen into a dashboard modal.
+        background: "color-mix(in srgb, var(--ink) 6%, transparent)",
         opacity: shown ? 1 : 0,
-        transition: "opacity 320ms var(--ease-quint)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        padding: 24,
+        transition: "opacity 220ms ease",
       }}
     >
       <div
         onClick={e => e.stopPropagation()}
         style={{
-          maxWidth: 720, width: "100%", maxHeight: "calc(100vh - 48px)",
-          background: "var(--surface)",
-          border: "1px solid var(--line-strong)", borderRadius: 14,
-          boxShadow: "0 24px 60px rgba(0,0,0,0.18)",
+          position: "absolute", left: 0, right: 0, bottom: 0,
+          height: "92vh",
+          // Paper, not "surface" — the assumptions page reads as a
+          // continuation of the main page, not a separate card.
+          background: "var(--bg)",
+          borderTop: "1px solid var(--line-strong)",
+          boxShadow: "0 -16px 40px color-mix(in srgb, var(--ink) 12%, transparent)",
           display: "flex", flexDirection: "column",
-          opacity: shown ? 1 : 0,
-          transform: shown ? "translateY(0)" : "translateY(16px)",
-          transition: "opacity 320ms ease, transform 360ms var(--ease-expo)",
-          overflow: "hidden",
+          transform: shown ? "translateY(0)" : "translateY(40px)",
+          transition: "transform 320ms var(--ease-expo)",
         }}
       >
-        {/* Header */}
+        {/* Inner content constrained to the page column — so labels
+            and value inputs sit next to each other on wide screens. */}
         <div style={{
-          padding: "20px 24px 14px",
-          borderBottom: "1px solid var(--line)",
-          display: "flex", flexDirection: "column", gap: 12,
+          width: "100%", maxWidth: 1080, margin: "0 auto",
+          display: "flex", flexDirection: "column",
+          flex: "1 1 auto", minHeight: 0,
         }}>
+          {/* Header — editorial register: small eyebrow + serif title
+              + italic prose lead, mirroring the per-item drawer. */}
           <div style={{
+            padding: "20px 28px 16px",
+            borderBottom: "1px solid var(--line)",
             display: "flex", alignItems: "flex-start", justifyContent: "space-between",
             gap: 16,
           }}>
-            <div>
+            <div style={{ minWidth: 0, flex: "1 1 auto" }}>
               <div style={{
-                fontFamily: "var(--serif)", fontSize: 22, fontWeight: 500,
-                letterSpacing: "-0.01em", color: "var(--ink)",
+                fontFamily: "var(--sans)", fontSize: 11, fontWeight: 600,
+                letterSpacing: "0.08em", textTransform: "uppercase",
+                color: "var(--muted)", marginBottom: 4,
+              }}>Editing</div>
+              <div style={{
+                fontFamily: "var(--serif)", fontSize: 26, fontWeight: 500,
+                color: "var(--ink)", letterSpacing: "-0.015em", lineHeight: 1.15,
               }}>All assumptions</div>
-              <div style={{
-                fontSize: 12, color: "var(--muted)", marginTop: 4, lineHeight: 1.5,
+              <p style={{
+                fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 14,
+                color: "var(--muted)",
+                margin: "6px 0 0", maxWidth: "60ch", lineHeight: 1.55,
               }}>
-                Edit any value to see the model update live. Outcomes we'll deliver are bordered green; world facts are everything else.
-              </div>
+                Every value that feeds the case. Click any row to read why
+                it's there or move it.
+              </p>
             </div>
             <button
+              type="button"
               onClick={onClose}
-              aria-label="Close"
               style={{
-                border: "none", background: "transparent",
-                color: "var(--muted)", cursor: "pointer",
-                fontSize: 22, lineHeight: 1, padding: 4,
+                background: "transparent",
+                border: "1px solid var(--line-strong)",
+                padding: "4px 12px", borderRadius: 999,
+                fontFamily: "var(--sans)", fontSize: 12, fontWeight: 600,
+                color: "var(--muted)", letterSpacing: "0.02em",
+                cursor: "pointer",
               }}
-            >×</button>
+            >Close</button>
           </div>
-          {/* Scope filter — narrows the visible assumption rows to those
-              feeding items at or below the chosen scope. */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{
-              fontSize: 10.5, color: "var(--muted-2)",
-              letterSpacing: "0.12em", textTransform: "uppercase",
-              fontWeight: 500, whiteSpace: "nowrap",
-            }}>Show assumptions for</span>
-            <ScopeScale level={scopeFilter} onSetLevel={setScopeFilter} />
+          {/* Body — scrollable. Two prose-led sections (what we know
+              about your business / what we commit to). No green wash,
+              no side-stripe, no verification checks — those were
+              dashboard-style affordances. */}
+          <div style={{
+            overflowY: "auto", flex: "1 1 auto", minHeight: 0,
+            padding: "0 28px 32px",
+          }}>
+            {worldFacts.length > 0 && (
+              <div style={{ marginTop: 28 }}>
+                <h3 style={{
+                  fontFamily: "var(--serif)", fontSize: 22, fontWeight: 500,
+                  color: "var(--ink)", letterSpacing: "-0.015em",
+                  lineHeight: 1.2, margin: "0 0 6px",
+                }}>What we know about your business</h3>
+                <p style={{
+                  fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 13.5,
+                  color: "var(--muted)", margin: "0 0 4px",
+                  maxWidth: "60ch", lineHeight: 1.55,
+                }}>
+                  Values about your business today. They drive everything
+                  the case predicts.
+                </p>
+                {worldFacts.map(a => (
+                  <AssumptionRow
+                    key={a.id} a={a}
+                    value={A && A[a.id] != null ? A[a.id] : a.value}
+                    setAssumption={setAssumption}
+                    disabled={viewOnly}
+                  />
+                ))}
+              </div>
+            )}
+            {commitments.length > 0 && (
+              <div style={{ marginTop: 40 }}>
+                <h3 style={{
+                  fontFamily: "var(--serif)", fontSize: 22, fontWeight: 500,
+                  color: "var(--ink)", letterSpacing: "-0.015em",
+                  lineHeight: 1.2, margin: "0 0 6px",
+                }}>What we commit to</h3>
+                <p style={{
+                  fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 13.5,
+                  color: "var(--muted)", margin: "0 0 4px",
+                  maxWidth: "60ch", lineHeight: 1.55,
+                }}>
+                  Targets we promise to hit. Move these to see what shifts.
+                </p>
+                {commitments.map(a => (
+                  <AssumptionRow
+                    key={a.id} a={a}
+                    value={A && A[a.id] != null ? A[a.id] : a.value}
+                    setAssumption={setAssumption}
+                    disabled={viewOnly}
+                  />
+                ))}
+              </div>
+            )}
+            {commitments.length === 0 && worldFacts.length === 0 && (
+              <div style={{
+                padding: "60px 24px", textAlign: "center",
+                color: "var(--muted)", fontSize: 13.5, lineHeight: 1.55,
+                fontFamily: "var(--serif)", fontStyle: "italic",
+              }}>
+                No assumptions on this case yet.
+              </div>
+            )}
           </div>
-        </div>
-
-        {/* Body — scrollable when overflowing the viewport. */}
-        <div style={{
-          overflowY: "auto",
-          padding: "0 0 24px",
-        }}>
-          {/* World facts first — these are what the audience is being
-              asked to confirm, so they lead the page. */}
-          {worldFacts.length > 0 && (
-            <>
-              <div style={{
-                fontFamily: "var(--serif)", fontSize: 26, fontWeight: 500,
-                color: "var(--ink)", letterSpacing: "-0.015em", lineHeight: 1.1,
-                padding: "28px 24px 14px",
-              }}>Assumptions about your business</div>
-              <div>
-                {worldFacts.map(a => renderRow(a, false))}
-              </div>
-            </>
-          )}
-          {commitments.length > 0 && (
-            <>
-              <div style={{
-                fontFamily: "var(--serif)", fontSize: 26, fontWeight: 500,
-                color: "var(--ink)", letterSpacing: "-0.015em", lineHeight: 1.1,
-                padding: "32px 24px 14px",
-                // No top rule — each row already carries a bottom border,
-                // so adding one here would read as a double line between
-                // the last world-fact row and this heading.
-              }}>Our commitments</div>
-              <div>
-                {commitments.map(a => renderRow(a, true))}
-              </div>
-            </>
-          )}
-          {commitments.length === 0 && worldFacts.length === 0 && (
-            <div style={{
-              padding: "60px 24px", textAlign: "center",
-              color: "var(--muted)", fontSize: 13, lineHeight: 1.5,
-            }}>
-              No assumptions match this scope filter.
-            </div>
-          )}
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 };
 
 const MinimalLanding = (props) => {
@@ -2975,6 +4845,8 @@ const MinimalLanding = (props) => {
     selectedItemId, onSelectItem, onHoverItem,
     onAddItem, onRemoveItem, onEditItem,
     scopeLevel, onSetScopeLevel,
+    niceRounding, setNiceRounding,
+    levelOverrides, setLevelOverride,
     confirmedAssumptions, markAssumptionConfirmed,
     commitmentsConfirmed, setCommitmentsConfirmed,
     worldProceedClicked, setWorldProceedClicked,
@@ -3001,6 +4873,20 @@ const MinimalLanding = (props) => {
   // with confirmed factors) on demand. Per-session, not persisted —
   // the disclosure is for the math-curious reader.
   const [andShowMath, setAndShowMath] = React.useState(false);
+  // Bonus reveal state — hoisted to this level so the proportion
+  // strip (rendered outside BenefitsListing) can trigger the expand
+  // when the buyer clicks the bonus row of the strip.
+  const [showBonus, setShowBonus] = React.useState(false);
+  // Jump-to helper used by the proportion strip. Scrolls a section
+  // into view; for the bonus row, expands the reveal first and waits
+  // for the next paint so the element exists before we scroll.
+  const jumpToSection = React.useCallback((key) => {
+    if (key === "bonus") setShowBonus(true);
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-landing-row="${key}"]`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, []);
   // Track whether the Costs row's headline is visible in the viewport
   // above the Total bar. When it's pushed off the page, the Total row
   // surfaces a small "−$Xk" hint so the viewer can still see the
@@ -3123,25 +5009,59 @@ const MinimalLanding = (props) => {
       .filter(Boolean);
   }, [frozenTopCommitIds, attribution, props.assumptions]);
 
-  // Mirror of the commitment-freeze: top 3 world facts by scope-1
-  // sensitivity, captured once and frozen for the session. Powers the
-  // NOW row at the top of the proof.
+  // World-fact confirm rows for NOW.
+  //
+  // Rule: every assumption referenced by a "These imply:" baseline
+  // formula MUST appear as a confirm row, otherwise that factor renders
+  // as "?" forever — the buyer was never asked. So the source of truth
+  // is the union of `BASELINE[i].factors[j].ids`, ordered by scope-1
+  // sensitivity (so the most-load-bearing fact reveals first).
+  //
+  // Fallback: when the config has no baseline equations, fall back to
+  // the previous behaviour — top 3 world facts by scope-1 sensitivity,
+  // frozen for the session.
+  const baselineIds = React.useMemo(() => {
+    const baseline = (typeof BASELINE !== "undefined" && Array.isArray(BASELINE))
+      ? BASELINE : [];
+    const seen = new Set();
+    const ids = [];
+    baseline.forEach(b => {
+      (b.factors || []).forEach(f => {
+        (f.ids || []).forEach(id => {
+          if (!seen.has(id)) { seen.add(id); ids.push(id); }
+        });
+      });
+    });
+    return ids;
+  }, []);
   const [frozenTopWorldIds, setFrozenTopWorldIds] = React.useState(null);
   React.useEffect(() => {
     if (frozenTopWorldIds) return;
+    if (baselineIds.length > 0) return;
     if (!attribution || !attribution.world) return;
     const ids = Object.keys(attribution.world).slice(0, 3);
     if (ids.length === 0) return;
     setFrozenTopWorldIds(ids);
-  }, [attribution, frozenTopWorldIds]);
+  }, [attribution, frozenTopWorldIds, baselineIds.length]);
   const topWorldFacts = React.useMemo(() => {
-    const idsSource = frozenTopWorldIds
-      || (attribution && attribution.world ? Object.keys(attribution.world).slice(0, 3) : null);
+    let idsSource;
+    if (baselineIds.length > 0) {
+      const sensRank = (attribution && attribution.world)
+        ? Object.keys(attribution.world) : [];
+      const rankOf = id => {
+        const i = sensRank.indexOf(id);
+        return i === -1 ? Infinity : i;
+      };
+      idsSource = [...baselineIds].sort((a, b) => rankOf(a) - rankOf(b));
+    } else {
+      idsSource = frozenTopWorldIds
+        || (attribution && attribution.world ? Object.keys(attribution.world).slice(0, 3) : null);
+    }
     if (!idsSource) return [];
     return idsSource
       .map(id => (props.assumptions || []).find(x => x.id === id))
       .filter(Boolean);
-  }, [frozenTopWorldIds, attribution, props.assumptions]);
+  }, [baselineIds, frozenTopWorldIds, attribution, props.assumptions]);
 
   // Sequential-reveal bookkeeping. NOW and AND each step the reader
   // through the rows one at a time — the next row appears only after
@@ -3283,7 +5203,32 @@ const MinimalLanding = (props) => {
     ? window.niceRound(v) : v;
   const revenueUpliftDisp = __r(revenueUpliftPV);
   const costSavingDisp = __r(costSavingPV);
-  const benefitsTotalDisp = revenueUpliftDisp + costSavingDisp;
+  // benefitsTotalDisp respects level overrides so a section / category /
+  // item override propagates UP into the grand Total. Without this, the
+  // override would show inside the BenefitsListing but the Total bar
+  // would silently keep using the computed-from-assumptions number.
+  const __itemOv = (levelOverrides && levelOverrides.item) || {};
+  const __catOv = (levelOverrides && levelOverrides.cat) || {};
+  const __sectionOv = (levelOverrides && levelOverrides.section) || {};
+  const __effItem = (it) => (it.id in __itemOv)
+    ? __itemOv[it.id]
+    : ((model.perItem[it.id]?.grossPV) ?? 0);
+  const __effCatTotal = (scope, kind) => {
+    const k = `${scope}_${kind}`;
+    if (k in __catOv) return __catOv[k];
+    return visibleBenefits
+      .filter(b => (([1,2,3].includes(b.scope) ? b.scope : 1) === scope))
+      .filter(b => (b.benefitKind || "qualitative") === kind)
+      .filter(b => kind !== "qualitative")
+      .reduce((s, b) => s + __effItem(b), 0);
+  };
+  const __effSectionTotal = (scope) => {
+    if (scope in __sectionOv) return __sectionOv[scope];
+    return __effCatTotal(scope, "revenue_uplift") + __effCatTotal(scope, "cost_saving");
+  };
+  // Direct section = scope 1. Adjacent / Downstream are not included
+  // in the Total bar (bonus is upside, not load-bearing).
+  const benefitsTotalDisp = __r(__effSectionTotal(1));
   const costsDisp = __r(pvSum(costs));
   const npvDisp = benefitsTotalDisp - costsDisp;
   // "Bonus" upside out of current scope. Derived per-kind so the bonus
@@ -3367,7 +5312,7 @@ const MinimalLanding = (props) => {
           fontWeight: emphatic ? 600 : 400,
           fontStyle: emphatic ? "normal" : "italic",
           color: "var(--muted)",
-          opacity: 0.55,
+          opacity: 0.32,
           letterSpacing: "-0.02em",
           marginBottom: 6,
         }) : ({
@@ -3387,7 +5332,7 @@ const MinimalLanding = (props) => {
           // pure --ink-2 stamps onto the page even at 50% page-saturation
           // because the type's sheer mass overwhelms the colour value.
           color: "var(--muted)",
-          opacity: 0.55,
+          opacity: 0.28,
           letterSpacing: "-0.03em",
           whiteSpace: "nowrap",
           pointerEvents: "none",
@@ -3447,11 +5392,15 @@ const MinimalLanding = (props) => {
               // while the rest of the proof unfolds beneath.
               const collapsed = !!worldProceedClicked || !!viewOnly;
               return (
-                <div style={rowStyle}>
+                // Tighter than the default rowStyle gap: Now and And
+                // are both setup ("here's where you are" → "here's
+                // what we'll do"). The big rhetorical pause belongs
+                // between And and Then.
+                <div style={{ ...rowStyle, marginBottom: isMobile ? 32 : 60 }}>
                   <div style={opStyle(false)} aria-hidden>Now</div>
                   {!collapsed && (
                     <p style={conditionProse}>
-                      the world looks like this — confirm what matches your business:
+                      Please confirm a few of our assumptions.
                     </p>
                   )}
                   {!collapsed && (
@@ -3518,14 +5467,12 @@ const MinimalLanding = (props) => {
                         cells.push({ kind: "total", value: totalDisplay, label: b.label, confirmed: allConfirmed });
                         // The "Let's proceed" button only attaches to
                         // the FIRST baseline equation, and only when
-                        // the whole NOW input has resolved and we're
-                        // not yet past that gate. Gated on the top-3
-                        // confirm rows, NOT on per-factor confirmation
-                        // of this particular baseline — a baseline
-                        // formula can reference assumptions outside the
-                        // top-3, which would otherwise leave the button
-                        // permanently disabled even after the buyer has
-                        // clicked through every Sounds-right row.
+                        // every world-fact confirm row has resolved.
+                        // The confirm-row set is derived from the union
+                        // of baseline factor ids (see `baselineIds`
+                        // above), so `allWorldConfirmed` here implies
+                        // every factor of every baseline has a real
+                        // value to display.
                         const showProceed = !viewOnly
                           && !worldProceedClicked
                           && bi === 0
@@ -3533,9 +5480,9 @@ const MinimalLanding = (props) => {
                         return (
                           <div key={bi}>
                             <div style={{
-                              fontFamily: "var(--mono)", fontSize: 10,
-                              letterSpacing: "0.12em", textTransform: "uppercase",
-                              color: "var(--muted-2)", fontWeight: 600,
+                              fontFamily: "var(--sans)", fontSize: 12,
+                              letterSpacing: "0.08em", textTransform: "uppercase",
+                              color: "var(--muted)", fontWeight: 600,
                               marginBottom: 10,
                             }}>{b.label}</div>
                             <div style={{
@@ -3583,8 +5530,8 @@ const MinimalLanding = (props) => {
                                   if (c.kind === "op") return <div key={`l-${ci}`} />;
                                   return (
                                     <div key={`l-${ci}`} style={{
-                                      fontFamily: "var(--sans)", fontSize: 10.5,
-                                      color: "var(--muted-2)", lineHeight: 1.3,
+                                      fontFamily: "var(--sans)", fontSize: 12.5,
+                                      color: "var(--muted)", lineHeight: 1.3,
                                       letterSpacing: "0.01em",
                                       whiteSpace: "nowrap",
                                     }}>{c.label}</div>
@@ -3626,20 +5573,20 @@ const MinimalLanding = (props) => {
                                   type="button"
                                   onClick={() => setWorldProceedClicked && setWorldProceedClicked(false)}
                                   style={{
-                                    background: "transparent", border: "none",
-                                    padding: 0, cursor: "pointer",
-                                    fontFamily: "var(--serif)", fontStyle: "italic",
-                                    fontSize: 13, color: "var(--muted)",
-                                    letterSpacing: "-0.005em",
+                                    background: "var(--surface)",
+                                    border: "1px solid var(--line-strong)",
+                                    padding: "5px 12px",
+                                    borderRadius: 999,
+                                    cursor: "pointer",
+                                    fontFamily: "var(--sans)", fontSize: 12,
+                                    fontWeight: 600,
+                                    color: "var(--ink-2)",
+                                    letterSpacing: "0.01em",
                                     alignSelf: "center",
+                                    whiteSpace: "nowrap",
                                   }}
                                   title="Re-open the world-fact editors"
-                                >
-                                  <span style={{
-                                    borderBottom: "1px solid var(--line-strong)",
-                                    paddingBottom: 1,
-                                  }}>Edit</span>
-                                </button>
+                                >Edit</button>
                               )}
                             </div>
                           </div>
@@ -3753,6 +5700,10 @@ const MinimalLanding = (props) => {
 
               return (
             <div style={{ ...rowStyle,
+                          // Bigger pause after And before Then: this is
+                          // the proof's payoff transition (the projected
+                          // impact). Rhythm carries hierarchy.
+                          marginBottom: isMobile ? 56 : 120,
                           animation: (viewOnly || commitmentsConfirmed) ? undefined : "fadeIn 360ms var(--ease-expo)" }}>
               <div style={opStyle(false)} aria-hidden>And</div>
               <p style={conditionProse}>we hit the following targets:</p>
@@ -3782,20 +5733,28 @@ const MinimalLanding = (props) => {
                 })}
               </div>
 
-              {scope1Quant.length > 0 && (
+              {false && scope1Quant.length > 0 && (
+                // "which means, each year:" subtotals + math chains —
+                // removed because they duplicated the Then section's
+                // breakdown a few hundred pixels below. Kept as
+                // dead code (gated behind `false`) so the helpers
+                // above (factorsFor, formatFactor, conditionProse,
+                // showBenefitBreakdowns) remain referenced without
+                // ESLint complaining and we don't have to delete the
+                // whole closure tree.
                 <div style={{
                   marginTop: 22, paddingTop: 18,
                   borderTop: "1px dashed var(--line)",
                   opacity: showBenefitBreakdowns ? 1 : 0.5,
                   transition: "opacity 240ms ease",
                 }}>
-                  <div style={{
-                    fontFamily: "var(--serif)", fontStyle: "italic",
-                    fontSize: 13.5, color: "var(--muted)",
-                    lineHeight: 1.5, marginBottom: 14,
+                  <p style={{
+                    ...conditionProse,
+                    fontStyle: "normal", color: "var(--ink)", fontWeight: 500,
+                    margin: "0 0 18px",
                   }}>
-                    Which means each year:
-                  </div>
+                    which means, each year:
+                  </p>
                   {(() => {
                   // Partition by both time-shape and benefit kind so
                   // each homogeneous group gets the right subtotal
@@ -3991,7 +5950,18 @@ const MinimalLanding = (props) => {
                     const unresolved = headline === "?";
                     return (
                     <>
-                      <div />
+                      {/* Label spans the full row width on the LEFT so it
+                          reads as a sentence: the reader sees what the
+                          number means before they see the number. */}
+                      <div style={{
+                        borderTop: "1px solid var(--line-strong)",
+                        paddingTop: 12, marginTop: 4,
+                        fontFamily: "var(--serif)",
+                        fontSize: 15, lineHeight: 1.35,
+                        color: "var(--ink-2)",
+                        letterSpacing: "-0.005em",
+                        alignSelf: "center",
+                      }}>{label}</div>
                       <div style={{
                         borderTop: "1px solid var(--line-strong)",
                         paddingTop: 12, marginTop: 4,
@@ -4012,12 +5982,6 @@ const MinimalLanding = (props) => {
                             marginTop: 3, whiteSpace: "nowrap",
                           }}>{secondary}</div>
                         )}
-                        <div style={{
-                          fontFamily: "var(--mono)", fontSize: 10,
-                          letterSpacing: "0.12em", textTransform: "uppercase",
-                          color: "var(--muted-2)", fontWeight: 600,
-                          marginTop: 4,
-                        }}>{label}</div>
                       </div>
                     </>
                   );
@@ -4039,91 +6003,184 @@ const MinimalLanding = (props) => {
                     return `${sign}${fmtMoneyExact(Math.abs(v))}`;
                   };
 
-                  return (
-                    <div style={{
-                      display: "grid",
-                      gridTemplateColumns: "minmax(0, 1fr) max-content",
-                      columnGap: 24, rowGap: 18,
-                      alignItems: "baseline",
-                      fontVariantNumeric: "tabular-nums",
-                    }}>
-                      {/* In compact mode (default) the per-benefit
-                          equations live behind the "Show me how" toggle
-                          — the commitment rows above already say the
-                          same thing, just without the dollar attribution.
-                          We only render the subtotals here. The math
-                          view shows the full per-benefit chains. */}
+                  // Per-item math chain — same visual treatment as the
+                  // Now-section baseline equation (value on top, plain-
+                  // English label underneath, operators between). The
+                  // principle: a bare number is not a claim; each value
+                  // must arrive with the meaning the buyer can verify.
+                  const renderItemMathChain = (it) => {
+                    const raw = factorsFor(it).map(formatFactor);
+                    const allConfirmed = raw.every(f => f.confirmed);
+                    const series = model.perItem[it.id];
+                    const annual = series && series.grossAnnual != null
+                      ? series.grossAnnual : 0;
+                    const totalUnit = it.lump ? "$" : "$/yr";
+                    const signedTotal = (v, unit) => {
+                      if (v == null || !Number.isFinite(v)) return "?";
+                      const sign = v > 0 ? "+" : (v < 0 ? "−" : "");
+                      return sign + fmtValueWithUnit(Math.abs(v), unit);
+                    };
+                    const totalDisplay = allConfirmed
+                      ? signedTotal(annual, totalUnit) : "?";
 
-                      {/* --- Recurring revenue uplift -------------------- */}
-                      {andShowMath && recurringRev.map(renderBenefitRow)}
-                      {recurringRev.length > 0
-                        && baselineRevenueValue && baselineRevenueValue > 0
-                        && renderSubtotal(
-                          recurringRevResolved
-                            ? fmtSignedPct(sumFor(recurringRev) / baselineRevenueValue)
-                            : "?",
-                          recurringRevResolved
-                            ? `${fmtSignedMoney(sumFor(recurringRev))}/yr`
-                            : null,
-                          "Change to your annual revenue"
-                        )}
-                      {/* --- Recurring cost savings ---------------------- */}
-                      {andShowMath && recurringCost.map(renderBenefitRow)}
-                      {recurringCost.length > 0
-                        && renderSubtotal(
-                          recurringCostResolved
-                            ? `${fmtMoneyExact(sumFor(recurringCost))}/yr`
-                            : "?",
-                          null,
-                          "Recurring cost savings"
-                        )}
-                      {/* --- Lump (one-off) items ------------------------ */}
-                      {andShowMath && lumps.map(renderBenefitRow)}
-                      {lumps.length > 0
-                        && renderSubtotal(
-                          lumpsResolved
-                            ? fmtMoneyExact(sumFor(lumps))
-                            : "?",
-                          null,
-                          "One-off benefit"
-                        )}
-                    </div>
+                    const cells = [];
+                    raw.forEach((f, fi) => {
+                      if (fi > 0) cells.push({ kind: "op", text: "×" });
+                      cells.push({
+                        kind: "factor",
+                        value: f.value, label: f.label,
+                        confirmed: f.confirmed,
+                      });
+                    });
+                    cells.push({ kind: "op", text: "=" });
+                    cells.push({
+                      kind: "total",
+                      value: totalDisplay, label: it.name,
+                      confirmed: allConfirmed,
+                    });
+
+                    return (
+                      <div key={it.id} style={{
+                        display: "grid",
+                        gridTemplateColumns: `repeat(${cells.length}, max-content)`,
+                        gridTemplateRows: "auto auto",
+                        columnGap: 14, rowGap: 4,
+                        alignItems: "baseline",
+                        fontVariantNumeric: "tabular-nums",
+                        overflowX: "auto",
+                      }}>
+                        {cells.map((c, ci) => {
+                          if (c.kind === "op") {
+                            return (
+                              <div key={`v-${ci}`} style={{
+                                fontFamily: "var(--sans)", fontSize: 16,
+                                fontWeight: 400, color: "var(--muted)",
+                                lineHeight: 1.2,
+                              }}>{c.text}</div>
+                            );
+                          }
+                          const isTotal = c.kind === "total";
+                          const dim = !c.confirmed;
+                          return (
+                            <div key={`v-${ci}`} style={{
+                              fontFamily: "var(--mono)",
+                              fontSize: isTotal ? 18 : 16,
+                              fontWeight: isTotal ? 700 : 600,
+                              color: dim
+                                ? "var(--muted-2)"
+                                : (isTotal ? "var(--ink)" : "var(--ink-2)"),
+                              lineHeight: 1.2, whiteSpace: "nowrap",
+                            }}>{c.value}</div>
+                          );
+                        })}
+                        {cells.map((c, ci) => {
+                          if (c.kind === "op") return <div key={`l-${ci}`} />;
+                          return (
+                            <div key={`l-${ci}`} style={{
+                              fontFamily: "var(--sans)", fontSize: 12.5,
+                              color: "var(--muted)", lineHeight: 1.3,
+                              letterSpacing: "0.01em",
+                              whiteSpace: "nowrap",
+                            }}>{c.label}</div>
+                          );
+                        })}
+                      </div>
+                    );
+                  };
+
+                  return (
+                    <>
+                      {/* SUBTOTALS — always shown. The conclusions of
+                          this section; the audit trail (math chains)
+                          is revealed below on demand. */}
+                      <div style={{
+                        display: "grid",
+                        gridTemplateColumns: "minmax(0, 1fr) max-content",
+                        columnGap: 24, rowGap: 18,
+                        alignItems: "baseline",
+                        fontVariantNumeric: "tabular-nums",
+                      }}>
+                        {recurringRev.length > 0
+                          && baselineRevenueValue && baselineRevenueValue > 0
+                          && renderSubtotal(
+                            recurringRevResolved
+                              ? fmtSignedPct(sumFor(recurringRev) / baselineRevenueValue)
+                              : "?",
+                            recurringRevResolved
+                              ? `${fmtSignedMoney(sumFor(recurringRev))}/yr`
+                              : null,
+                            "Change to your annual revenue"
+                          )}
+                        {recurringCost.length > 0
+                          && renderSubtotal(
+                            recurringCostResolved
+                              ? `${fmtMoneyExact(sumFor(recurringCost))}/yr`
+                              : "?",
+                            null,
+                            "Recurring cost savings"
+                          )}
+                        {lumps.length > 0
+                          && renderSubtotal(
+                            lumpsResolved
+                              ? fmtMoneyExact(sumFor(lumps))
+                              : "?",
+                            null,
+                            "One-off benefit"
+                          )}
+                      </div>
+
+                      {/* Trust-on-demand: the audit-trail toggle. The
+                          chevron points DOWN to reveal — the math then
+                          appears BELOW the button, matching the
+                          control's pointing direction. Previously the
+                          math interleaved with subtotals above the
+                          button, which contradicted the gesture. */}
+                      {scope1Quant.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setAndShowMath(s => !s)}
+                          style={{
+                            marginTop: 22,
+                            background: andShowMath
+                              ? "var(--surface-2)"
+                              : "var(--surface)",
+                            border: "1px solid var(--line-strong)",
+                            padding: "8px 14px",
+                            borderRadius: 999,
+                            cursor: "pointer",
+                            display: "inline-flex", alignItems: "center", gap: 8,
+                            fontFamily: "var(--sans)", fontSize: 13, fontWeight: 600,
+                            color: "var(--ink-2)",
+                            letterSpacing: "0.01em",
+                            transition: "background 160ms ease, border-color 160ms ease",
+                          }}
+                          title="Show the multiplication chain behind each number"
+                        >
+                          <span style={{
+                            display: "inline-block",
+                            transform: andShowMath ? "rotate(90deg)" : "rotate(0deg)",
+                            transition: "transform 220ms var(--ease-quart)",
+                            fontFamily: "var(--mono)", fontSize: 12,
+                            lineHeight: 1,
+                            color: "var(--muted)",
+                          }}>▸</span>
+                          {andShowMath ? "Hide the math" : "Show the math"}
+                        </button>
+                      )}
+
+                      {andShowMath && scope1Quant.length > 0 && (
+                        <div style={{
+                          marginTop: 18,
+                          display: "flex", flexDirection: "column", gap: 22,
+                          animation: "fadeIn 240ms var(--ease-quart)",
+                        }}>
+                          {[...recurringRev, ...recurringCost, ...lumps]
+                            .map(renderItemMathChain)}
+                        </div>
+                      )}
+                    </>
                   );
                   })()}
-                  {/* Audit-trail toggle — reveals each benefit's full
-                      multiplication chain (the confirmed world-fact
-                      factors that flow into the result). Hidden by
-                      default so the non-financial reader sees the
-                      conclusion before being asked to verify the math. */}
-                  {scope1Quant.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setAndShowMath(s => !s)}
-                      style={{
-                        marginTop: 20,
-                        background: "transparent", border: "none",
-                        padding: 0, cursor: "pointer",
-                        display: "inline-flex", alignItems: "center", gap: 8,
-                        fontFamily: "var(--serif)", fontStyle: "italic",
-                        fontSize: 14, color: "var(--muted)",
-                        letterSpacing: "-0.005em",
-                      }}
-                    >
-                      <span style={{
-                        display: "inline-block",
-                        transform: andShowMath ? "rotate(90deg)" : "rotate(0deg)",
-                        transition: "transform 220ms var(--ease-quart)",
-                        fontFamily: "var(--mono)", fontSize: 12,
-                        lineHeight: 1,
-                      }}>▸</span>
-                      <span style={{
-                        borderBottom: "1px solid var(--line-strong)",
-                        paddingBottom: 1,
-                      }}>
-                        {andShowMath ? "Hide the math" : "Show the math"}
-                      </span>
-                    </button>
-                  )}
                 </div>
               )}
             </div>
@@ -4141,7 +6198,7 @@ const MinimalLanding = (props) => {
                   ...conditionProse,
                   fontStyle: "normal", fontWeight: 500, color: "var(--ink)",
                 }}>
-                  Based on those assumptions, we expect:
+                  Over the next {horizon} {horizon === 1 ? "year" : "years"}, given the assumptions you entered, we expect:
                 </p>
               </div>
             )}
@@ -4158,74 +6215,65 @@ const MinimalLanding = (props) => {
       }}>
       {/* Focus behaviour: when exactly one of {Benefits, Costs} is open,
           mute the other two rows so attention sits on the opened section. */}
-      {/* Benefits — the only thing the prospect sees up front */}
-      <LandingRow isFirst
-        muted={!open.has("ben") && open.has("cost")}
-        elevated={modalOpen}
-        dataKey="benefits"
-        label="Benefits"
-        valueNode={
-          <BenefitsHeadlineValue
-            includedDisp={benefitsTotalDisp}
-            remainingDisp={bonusDisp}
-          />
-        }
-        isOpen={open.has("ben")}
-        onToggle={() => toggle("ben")}
-      >
-        {/* Break the benefits grid out of the 760px page column so the
-            three-column table can use the viewport's full width. Only this
-            block widens; ScopeScale + AddItem above/below stay narrow. */}
-        {/* Viewport-relative breakout. Using negative margin (rather than
-            `transform: translateX(-50%)`) avoids creating a new stacking
-            context, so elevated elements inside the table can rise above
-            the modal backdrop's z-index when the estimate editor opens. */}
-        <div style={isMobile ? undefined : {
-          width: "100vw",
-          marginLeft: "calc(50% - 50vw)",
-          display: "flex",
-          justifyContent: "center",
-        }}>
-        <div style={isMobile ? undefined : {
-          width: "min(1100px, calc(100vw - 48px))",
-        }}>
-          <BenefitsBreakdown
-            items={allBenefits}
-            scopeLevel={scopeLevel}
-            activeKind={activeBenefitKind}
-            focusedAssumptionId={focusedAssumptionId}
-            revealedKinds={revealedKinds}
-            onRevealKind={onRevealKind}
-            headlineByKind={headlineByKind}
-            model={model} A={A} assumptions={assumptions}
-            setAssumption={props.setAssumption}
-            viewOnly={viewOnly}
-            horizon={horizon} isMobile={isMobile}
-            openId={openItemId} setOpenId={setOpenItemId}
-            hoveredId={hoveredItemId} setHoveredId={setHoveredItemId}
-          />
-        </div>
-        </div>
+      {/* Benefits — table is rendered on its own (no drawer/toggle).
+          Earlier this was a collapsible LandingRow; the table is the
+          point of the page, so it shouldn't be hidden behind a click,
+          and the ScopeScale below it was also disappearing into the
+          closed drawer. Costs stays toggleable. */}
+      {/* Benefits — essay-form listing.
+          Single locus of attention: Direct benefits are the proof. The
+          page total at the bottom is the only place the case declares
+          its final figure. Adjacent and Downstream live behind a
+          "Show bonus benefits" toggle inside BenefitsListing — they
+          are explicitly framed as "you get this for free", never
+          counted in the headline claim. The earlier three-column
+          dashboard layout was the most mobile-hostile and app-shaped
+          moment on the page; this stack reads top-to-bottom on phone
+          and desktop alike. */}
+      <div data-landing-row="benefits" style={{ paddingTop: 26, scrollMarginTop: 80 }}>
+        <BenefitsListing
+          items={allBenefits}
+          model={model}
+          assumptions={assumptions}
+          A={A}
+          setAssumption={props.setAssumption}
+          viewOnly={viewOnly}
+          horizon={horizon}
+          levelOverrides={levelOverrides}
+          setLevelOverride={setLevelOverride}
+          showBonus={showBonus}
+          setShowBonus={setShowBonus}
+          grandTotalLabel={`Total over ${horizon} ${horizon === 1 ? "year" : "years"}`}
+          grandTotalValue={`${npvDisp < 0 ? "−" : ""}${fmtMoney(Math.abs(npvDisp), { exact: true })}`}
+          grandTotalAccent={npvDisp >= 0 ? "var(--green-deep)" : "var(--red-deep)"}
+        />
+      </div>
 
-        {(s2Items.length > 0 || s3Items.length > 0) && (
-          <div style={{ marginTop: 20 }}>
-            <ScopeScale level={scopeLevel} onSetLevel={onSetScopeLevel} />
-          </div>
-        )}
-
-      </LandingRow>
-
-      <LandingRow
-        muted={open.has("ben") && !open.has("cost")}
-        stickyTop
-        dataKey="costs"
-        label="Costs"
-        value={costsDisp}
-        valuePrefix="−"
-        accent="var(--red-deep)"
-        isOpen={open.has("cost")}
-        onToggle={() => toggle("cost")}
-      >
+      {/* Costs — same compact summary + stacked over-time chart. */}
+      <div data-landing-row="costs" style={{ paddingTop: 28, marginTop: 28, scrollMarginTop: 80 }}>
+        <ScopeView
+          items={costs}
+          model={model}
+          horizon={horizon}
+          title="Costs"
+          totalPV={costsDisp}
+          totalAccent="var(--red-deep)"
+          accent="var(--red-deep)"
+          valuePrefix="−"
+          viewOnly={viewOnly}
+        />
+      </div>
+      {false && (
+        <LandingRow
+          isStatic
+          dataKey="costs"
+          label="Costs"
+          headlineSize={32}
+          valueSize={32}
+          value={costsDisp}
+          valuePrefix="−"
+          accent="var(--red-deep)"
+        >
         <CostsBreakdown
           costs={costs} model={model} A={A} assumptions={props.assumptions}
           setAssumption={props.setAssumption}
@@ -4237,8 +6285,15 @@ const MinimalLanding = (props) => {
           openId={openItemId} setOpenId={setOpenItemId}
           hoveredId={hoveredItemId} setHoveredId={setHoveredItemId}
         />
-      </LandingRow>
+        </LandingRow>
+      )}
 
+      <ProportionStrip
+        costsValue={costsDisp}
+        directValue={benefitsTotalDisp}
+        bonusValue={bonusDisp}
+        onJump={jumpToSection}
+      />
       <NetBenefitRow
         npv={npvDisp}
         costsPV={costsDisp}
@@ -4247,6 +6302,9 @@ const MinimalLanding = (props) => {
         bonusPV={bonusDisp}
         elevated={modalOpen}
         showCostsHint={!costsRowVisible}
+        horizon={horizon}
+        niceRounding={niceRounding}
+        setNiceRounding={setNiceRounding}
       />
 
       {/* BUT — honest risk disclosure. Same operator-in-margin pattern as
@@ -4287,7 +6345,7 @@ const MinimalLanding = (props) => {
           fontFamily: "var(--serif)",
           fontSize: 28, lineHeight: 1,
           fontWeight: 400, fontStyle: "italic",
-          color: "var(--muted)", opacity: 0.55,
+          color: "var(--muted)", opacity: 0.32,
           letterSpacing: "-0.02em",
           marginBottom: 6,
         }) : ({
@@ -4298,7 +6356,7 @@ const MinimalLanding = (props) => {
           fontFamily: "var(--serif)",
           fontSize: 64, lineHeight: 1,
           fontWeight: 400, fontStyle: "italic",
-          color: "var(--muted)", opacity: 0.55,
+          color: "var(--muted)", opacity: 0.28,
           letterSpacing: "-0.03em",
           whiteSpace: "nowrap",
           pointerEvents: "none",
@@ -4309,30 +6367,21 @@ const MinimalLanding = (props) => {
           margin: 0, letterSpacing: "-0.005em",
         };
 
-        // Subsection labels rendered in the same left-margin marginalia
-        // style as IF / AND / THEN / BUT — but smaller, so the hierarchy
-        // reads clearly. Mobile collapses them inline above the group.
-        const subsectionLabelStyle = collapseMarginalia ? ({
+        // Subsection labels: previously rendered as 26px marginalia in
+        // the same style as Now/And/Then/Risks, but they're not pillars
+        // of the proof — they're inline subheads of the Risks section.
+        // The marginalia treatment forced an awkward two-line break
+        // ("Under our / control") and competed with the four real
+        // operators. Now: inline subheads above each group, no line
+        // break, no margin glyph.
+        const subsectionLabelStyle = {
           fontFamily: "var(--serif)",
-          fontSize: 18, lineHeight: 1.1,
-          fontWeight: 400, fontStyle: "italic",
-          color: "var(--muted)", opacity: 0.55,
-          letterSpacing: "-0.01em",
-          marginBottom: 10,
-        }) : ({
-          position: "absolute",
-          right: "100%",
-          marginRight: 56,
-          top: -2,
-          fontFamily: "var(--serif)",
-          fontSize: 26, lineHeight: 1.1,
-          fontWeight: 400, fontStyle: "italic",
-          color: "var(--muted)", opacity: 0.55,
-          letterSpacing: "-0.02em",
-          whiteSpace: "nowrap",
-          textAlign: "right",
-          pointerEvents: "none",
-        });
+          fontSize: 18, fontWeight: 500, fontStyle: "italic",
+          color: "var(--muted)",
+          letterSpacing: "-0.005em",
+          marginBottom: 14,
+          lineHeight: 1.3,
+        };
 
         const renderRisk = (r, idx) => {
           const key = `${r.locus}:${r.threatens || idx}:${idx}`;
@@ -4370,7 +6419,10 @@ const MinimalLanding = (props) => {
 
         return (
           <div style={{
-            marginTop: isMobile ? 56 : 96,
+            // Tightened from 56/96 — Risks should read as a continuation
+            // of the proof ("…but consider what could go wrong"), not as
+            // a separate appended section.
+            marginTop: isMobile ? 32 : 56,
             opacity: modalOpen ? 0.25 : 1,
             filter: modalOpen ? "blur(3px)" : "none",
             transition: "opacity 360ms ease, filter 360ms ease",
@@ -4379,13 +6431,13 @@ const MinimalLanding = (props) => {
             <div style={{ position: "relative", marginBottom: 28 }}>
               <div style={butOpStyle} aria-hidden>Risks</div>
               <p style={butConditionProse}>
-                here are the risks worth considering:
+                …but here's what could go wrong:
               </p>
             </div>
 
             {commitmentRisks.length > 0 && (
-              <div style={{ position: "relative", marginBottom: 36 }}>
-                <div style={subsectionLabelStyle} aria-hidden>Under our<br/>control</div>
+              <div style={{ marginBottom: 36 }}>
+                <div style={subsectionLabelStyle}>Things under our control</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
                   {commitmentRisks.map((r, idx) => renderRisk(r, idx))}
                 </div>
@@ -4393,8 +6445,8 @@ const MinimalLanding = (props) => {
             )}
 
             {worldRisks.length > 0 && (
-              <div style={{ position: "relative" }}>
-                <div style={subsectionLabelStyle} aria-hidden>Outside our<br/>control</div>
+              <div>
+                <div style={subsectionLabelStyle}>Things outside our control</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
                   {worldRisks.map((r, idx) => renderRisk(r, commitmentRisks.length + idx))}
                 </div>

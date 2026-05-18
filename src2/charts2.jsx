@@ -8,7 +8,7 @@
 
 const HoverStackedBars = ({
   series,
-  width = 600,
+  width: widthProp,
   height = 280,
   yMax,
   yLabelFmt = (v) => v >= 1000 ? `$${(v/1000).toFixed(1)}M` : `$${v.toFixed(0)}k`,
@@ -18,6 +18,32 @@ const HoverStackedBars = ({
   hoveredKey,
   onSegmentHover,
 }) => {
+  // Measure the container so the SVG renders at its true pixel width.
+  // Previously the chart used a fixed 600px viewBox with width="100%"
+  // + preserveAspectRatio="none", which stretched text glyphs whenever
+  // the container's aspect ratio diverged from 600x280. Text in a
+  // chart must always render at its native geometry — typographic
+  // integrity is non-negotiable.
+  const wrapRef = React.useRef(null);
+  const [measured, setMeasured] = React.useState(widthProp || 600);
+  React.useLayoutEffect(() => {
+    if (widthProp || !wrapRef.current) return;
+    const el = wrapRef.current;
+    const apply = () => {
+      const w = el.getBoundingClientRect().width;
+      if (w > 0) setMeasured(Math.max(320, Math.round(w)));
+    };
+    apply();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", apply);
+      return () => window.removeEventListener("resize", apply);
+    }
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [widthProp]);
+  const width = widthProp || measured;
+
   const padL = 44, padR = 12, padT = 10, padB = 28;
   const innerW = width - padL - padR;
   const innerH = height - padT - padB;
@@ -33,13 +59,11 @@ const HoverStackedBars = ({
   const barW = slot * 0.62;
 
   const [hoverYear, setHoverYear] = React.useState(null);
-  const wrapRef = React.useRef(null);
 
   const handleMove = (e) => {
     const rect = wrapRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const xPct = (e.clientX - rect.left) / rect.width;
-    const xPx = xPct * width;
+    const xPx = e.clientX - rect.left;
     if (xPx < padL || xPx > width - padR) { setHoverYear(null); return; }
     const idx = Math.floor((xPx - padL) / slot);
     if (idx >= 0 && idx < N) setHoverYear(idx);
@@ -59,8 +83,7 @@ const HoverStackedBars = ({
   return (
     <div ref={wrapRef} style={{ position: "relative" }}
          onMouseMove={handleMove} onMouseLeave={handleLeave}>
-      <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} role="img"
-           preserveAspectRatio="none"
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img"
            style={{ display: "block" }}>
         {/* Y axis ticks + grid — solid baseline, dashed intermediate grids */}
         {Array.from({ length: ticks }).map((_, i) => {
@@ -75,7 +98,7 @@ const HoverStackedBars = ({
                     strokeDasharray={isBaseline ? undefined : "1 4"}
                     shapeRendering="crispEdges" />
               <text x={padL - 8} y={y + 3} fontSize="11" fill="var(--muted-2)" textAnchor="end"
-                    fontFamily="var(--serif)" fontStyle="italic">{yLabelFmt(v / 1000)}</text>
+                    fontFamily="var(--mono)">{yLabelFmt(v / 1000)}</text>
             </g>
           );
         })}
