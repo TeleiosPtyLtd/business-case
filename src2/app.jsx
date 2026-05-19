@@ -3074,14 +3074,20 @@ const ProportionStrip = ({ costsValue, directValue, bonusValue, onJump }) => {
   const d = Math.max(0, directValue || 0);
   const b = Math.max(0, bonusValue || 0);
   const caseTotal = c + d;
-  if (caseTotal < 0.5) return null;
+  if (caseTotal < 0.5 && b < 0.5) return null;
+  const showCase = caseTotal >= 0.5;
   const showCosts = c >= 0.5;
   const showBonus = b >= 0.5;
-  const costsPct = (c / caseTotal) * 100;
-  const directPct = (d / caseTotal) * 100;
-  // Bonus is sized on the SAME scale as the case row, so it appears
-  // shorter than row 1 unless bonus actually exceeds the case.
-  const bonusPctOfCase = Math.min((b / caseTotal) * 100, 100);
+  // Both rows share the SAME visual scale: whichever total is larger
+  // (case or bonus) defines the 100% bar. When bonus exceeds the case
+  // — small-scale R&D de-risking projects where secondary upside is
+  // the point — the bonus row fills the bar and the case row shrinks
+  // proportionally beside it. Within the case row, costs and direct
+  // benefits stay in proportion to one another.
+  const maxTotal = Math.max(caseTotal, b);
+  const costsPct = showCase ? (c / maxTotal) * 100 : 0;
+  const directPct = showCase ? (d / maxTotal) * 100 : 0;
+  const bonusPct = (b / maxTotal) * 100;
   // Hover-isolation: the hovered segment lifts (brightens) while all
   // other segments dim. Same pattern as the FlowOverTime bar chart
   // so the proportion strip behaves consistently with it.
@@ -3142,64 +3148,70 @@ const ProportionStrip = ({ costsValue, directValue, bonusValue, onJump }) => {
   );
   return (
     <div style={{ marginTop: 36, marginBottom: 8 }}>
-      {/* Row 1 — the case (costs + direct benefits = 100%). */}
-      <div style={rowBgStyle}>
-        {showCosts && (
-          <SegmentLink targetKey="costs" width={costsPct} ariaLabel="Jump to Costs">
-            <div style={{
-              width: "100%",
-              height: 14,
-              background: "var(--red-deep)",
-              opacity: segOpacity("costs", 0.55),
-              transition: "opacity 160ms ease",
-            }} />
-          </SegmentLink>
-        )}
-        <SegmentLink targetKey="benefits" width={directPct} ariaLabel="Jump to Direct benefits">
-          <div style={{
-            width: "100%",
-            height: 14,
-            background: "var(--green-deep)",
-            opacity: segOpacity("benefits", 0.55),
-            marginLeft: showCosts ? 1 : 0,
-            transition: "opacity 160ms ease",
-          }} />
-        </SegmentLink>
-      </div>
-      <div style={{ display: "flex", marginTop: 8 }}>
-        {showCosts && (
-          <SegmentLink targetKey="costs" width={costsPct} ariaLabel="Jump to Costs">
-            <div style={{
-              display: "flex", flexDirection: "column",
-              alignItems: "flex-start", paddingLeft: 6,
-              minWidth: 0,
-              opacity: labelOpacity("costs"),
-              transition: "opacity 160ms ease",
-            }}>
-              <div style={labelStyle}>Costs</div>
-              <div style={valueStyle}>−{fmtMoney(c, { exact: true })}</div>
-            </div>
-          </SegmentLink>
-        )}
-        <SegmentLink targetKey="benefits" width={directPct} ariaLabel="Jump to Direct benefits">
-          <div style={{
-            display: "flex", flexDirection: "column",
-            alignItems: "flex-start", paddingLeft: 6,
-            minWidth: 0,
-            opacity: labelOpacity("benefits"),
-            transition: "opacity 160ms ease",
-          }}>
-            <div style={labelStyle}>Direct benefits</div>
-            <div style={valueStyle}>+{fmtMoney(d, { exact: true })}</div>
-          </div>
-        </SegmentLink>
-      </div>
-
-      {/* Row 2 — bonus, separate, on the same scale as row 1. */}
-      {showBonus && (
-        <div style={{ marginTop: 22 }}>
+      {/* Row 1 — the case (costs + direct benefits). When bonus
+          dominates this row is shorter than the bonus row beneath,
+          on the same scale. */}
+      {showCase && (
+        <>
           <div style={rowBgStyle}>
-            <SegmentLink targetKey="bonus" width={bonusPctOfCase} ariaLabel="Show bonus benefits">
+            {showCosts && (
+              <SegmentLink targetKey="costs" width={costsPct} ariaLabel="Jump to Costs">
+                <div style={{
+                  width: "100%",
+                  height: 14,
+                  background: "var(--red-deep)",
+                  opacity: segOpacity("costs", 0.55),
+                  transition: "opacity 160ms ease",
+                }} />
+              </SegmentLink>
+            )}
+            <SegmentLink targetKey="benefits" width={directPct} ariaLabel="Jump to Direct benefits">
+              <div style={{
+                width: "100%",
+                height: 14,
+                background: "var(--green-deep)",
+                opacity: segOpacity("benefits", 0.55),
+                marginLeft: showCosts ? 1 : 0,
+                transition: "opacity 160ms ease",
+              }} />
+            </SegmentLink>
+          </div>
+          <div style={{ display: "flex", marginTop: 8 }}>
+            {showCosts && (
+              <SegmentLink targetKey="costs" width={costsPct} ariaLabel="Jump to Costs">
+                <div style={{
+                  display: "flex", flexDirection: "column",
+                  alignItems: "flex-start", paddingLeft: 6,
+                  minWidth: 0,
+                  opacity: labelOpacity("costs"),
+                  transition: "opacity 160ms ease",
+                }}>
+                  <div style={labelStyle}>Costs</div>
+                  <div style={valueStyle}>−{fmtMoney(c, { exact: true })}</div>
+                </div>
+              </SegmentLink>
+            )}
+            <SegmentLink targetKey="benefits" width={directPct} ariaLabel="Jump to Direct benefits">
+              <div style={{
+                display: "flex", flexDirection: "column",
+                alignItems: "flex-start", paddingLeft: 6,
+                minWidth: 0,
+                opacity: labelOpacity("benefits"),
+                transition: "opacity 160ms ease",
+              }}>
+                <div style={labelStyle}>Direct benefits</div>
+                <div style={valueStyle}>+{fmtMoney(d, { exact: true })}</div>
+              </div>
+            </SegmentLink>
+          </div>
+        </>
+      )}
+
+      {/* Row 2 — bonus, on the same scale as row 1. */}
+      {showBonus && (
+        <div style={{ marginTop: showCase ? 22 : 0 }}>
+          <div style={rowBgStyle}>
+            <SegmentLink targetKey="bonus" width={bonusPct} ariaLabel="Show bonus benefits">
               <div style={{
                 width: "100%",
                 height: 14,
@@ -3210,7 +3222,7 @@ const ProportionStrip = ({ costsValue, directValue, bonusValue, onJump }) => {
             </SegmentLink>
           </div>
           <div style={{ display: "flex", marginTop: 8 }}>
-            <SegmentLink targetKey="bonus" width={bonusPctOfCase} ariaLabel="Show bonus benefits">
+            <SegmentLink targetKey="bonus" width={bonusPct} ariaLabel="Show bonus benefits">
               <div style={{
                 display: "flex", flexDirection: "column",
                 alignItems: "flex-start", paddingLeft: 6,
@@ -5455,28 +5467,30 @@ const MinimalLanding = (props) => {
                         const totalDisplay = allConfirmed
                           ? fmtValueWithUnit(total, b.unit)
                           : "?";
-                        // Each cell becomes a 2-row grid column: value
-                        // on top, label below — kept on the same lines
-                        // across the whole row via the parent grid.
-                        const cells = [];
+                        // Each "unit" pairs an operator with its
+                        // following factor so the operator never wraps
+                        // away from the value it belongs to. Units
+                        // flex-wrap as a whole when the row gets too
+                        // wide for one line — preferable to a horizontal
+                        // scrollbar, and keeps the equation readable as
+                        // continuous prose.
+                        const units = [];
                         factors.forEach((f, fi) => {
-                          if (fi > 0) cells.push({ kind: "op", text: "×" });
-                          cells.push({ kind: "factor", value: f.value, label: f.label, confirmed: f.confirmed });
+                          units.push({
+                            op: fi > 0 ? "×" : null,
+                            value: f.value,
+                            label: f.label,
+                            confirmed: f.confirmed,
+                            isTotal: false,
+                          });
                         });
-                        cells.push({ kind: "op", text: "=" });
-                        cells.push({ kind: "total", value: totalDisplay, label: b.label, confirmed: allConfirmed });
-                        // The "Let's proceed" button only attaches to
-                        // the FIRST baseline equation, and only when
-                        // every world-fact confirm row has resolved.
-                        // The confirm-row set is derived from the union
-                        // of baseline factor ids (see `baselineIds`
-                        // above), so `allWorldConfirmed` here implies
-                        // every factor of every baseline has a real
-                        // value to display.
-                        const showProceed = !viewOnly
-                          && !worldProceedClicked
-                          && bi === 0
-                          && allWorldConfirmed;
+                        units.push({
+                          op: "=",
+                          value: totalDisplay,
+                          label: b.label,
+                          confirmed: allConfirmed,
+                          isTotal: true,
+                        });
                         return (
                           <div key={bi}>
                             <div style={{
@@ -5486,112 +5500,106 @@ const MinimalLanding = (props) => {
                               marginBottom: 10,
                             }}>{b.label}</div>
                             <div style={{
-                              display: "flex",
+                              display: "flex", flexWrap: "wrap",
                               alignItems: "flex-start",
-                              gap: 18, flexWrap: "wrap",
+                              columnGap: 14, rowGap: 14,
+                              fontVariantNumeric: "tabular-nums",
                             }}>
-                              <div style={{
-                                display: "grid",
-                                gridTemplateColumns: `repeat(${cells.length}, max-content)`,
-                                gridTemplateRows: "auto auto",
-                                columnGap: 14, rowGap: 4,
-                                alignItems: "baseline",
-                                fontVariantNumeric: "tabular-nums",
-                                overflowX: "auto",
-                              }}>
-                                {/* Row 1: values + operators */}
-                                {cells.map((c, ci) => {
-                                  if (c.kind === "op") {
-                                    return (
-                                      <div key={`v-${ci}`} style={{
+                              {units.map((u, ui) => {
+                                const dim = !u.confirmed;
+                                return (
+                                  <div key={ui} style={{
+                                    display: "inline-flex",
+                                    alignItems: "baseline",
+                                    gap: 10,
+                                  }}>
+                                    {u.op && (
+                                      <span style={{
                                         fontFamily: "var(--sans)", fontSize: 16,
                                         fontWeight: 400, color: "var(--muted)",
                                         lineHeight: 1.2,
-                                      }}>{c.text}</div>
-                                    );
-                                  }
-                                  const isTotal = c.kind === "total";
-                                  const dim = !c.confirmed;
-                                  return (
-                                    <div key={`v-${ci}`} style={{
-                                      fontFamily: "var(--mono)",
-                                      fontSize: isTotal ? 18 : 16,
-                                      fontWeight: isTotal ? 700 : 600,
-                                      color: dim
-                                        ? "var(--muted-2)"
-                                        : (isTotal ? "var(--ink)" : "var(--ink-2)"),
-                                      lineHeight: 1.2, whiteSpace: "nowrap",
-                                      transition: "color 220ms ease",
-                                    }}>{c.value}</div>
-                                  );
-                                })}
-                                {/* Row 2: labels (blank under operators) */}
-                                {cells.map((c, ci) => {
-                                  if (c.kind === "op") return <div key={`l-${ci}`} />;
-                                  return (
-                                    <div key={`l-${ci}`} style={{
-                                      fontFamily: "var(--sans)", fontSize: 12.5,
-                                      color: "var(--muted)", lineHeight: 1.3,
-                                      letterSpacing: "0.01em",
-                                      whiteSpace: "nowrap",
-                                    }}>{c.label}</div>
-                                  );
-                                })}
-                              </div>
-                              {showProceed && (
-                                <button
-                                  type="button"
-                                  onClick={() => setWorldProceedClicked && setWorldProceedClicked(true)}
-                                  style={{
-                                    display: "inline-flex", alignItems: "center", gap: 8,
-                                    fontFamily: "var(--sans)", fontSize: 13, fontWeight: 600,
-                                    letterSpacing: "0.02em",
-                                    color: "#FFFFFF", background: "var(--green-deep)",
-                                    border: "none", borderRadius: 999,
-                                    padding: "9px 16px",
-                                    cursor: "pointer",
-                                    boxShadow: "0 6px 18px color-mix(in srgb, var(--green-deep) 28%, transparent)",
-                                    transition: "transform 160ms ease, box-shadow 160ms ease",
-                                    animation: "fadeIn 320ms var(--ease-expo)",
-                                    whiteSpace: "nowrap",
-                                    alignSelf: "center",
-                                  }}
-                                  onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-1px)"; }}
-                                  onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; }}
-                                >
-                                  Let's proceed
-                                  <IconArrowRight size={14} stroke={2.4} />
-                                </button>
-                              )}
-                              {/* When the NOW editors are collapsed, an
-                                  "Edit" link lets the consultant /
-                                  buyer re-expand the rows mid-session
-                                  without resetting commitmentsConfirmed
-                                  or persistence. */}
-                              {!viewOnly && worldProceedClicked && bi === 0 && (
-                                <button
-                                  type="button"
-                                  onClick={() => setWorldProceedClicked && setWorldProceedClicked(false)}
-                                  style={{
-                                    background: "var(--surface)",
-                                    border: "1px solid var(--line-strong)",
-                                    padding: "5px 12px",
-                                    borderRadius: 999,
-                                    cursor: "pointer",
-                                    fontFamily: "var(--sans)", fontSize: 12,
-                                    fontWeight: 600,
-                                    color: "var(--ink-2)",
-                                    letterSpacing: "0.01em",
-                                    alignSelf: "center",
-                                    whiteSpace: "nowrap",
-                                  }}
-                                  title="Re-open the world-fact editors"
-                                >Edit</button>
-                              )}
+                                      }}>{u.op}</span>
+                                    )}
+                                    <span style={{
+                                      display: "inline-flex", flexDirection: "column",
+                                      alignItems: "flex-start", gap: 4,
+                                      minWidth: 0,
+                                    }}>
+                                      <span style={{
+                                        fontFamily: "var(--mono)",
+                                        fontSize: u.isTotal ? 18 : 16,
+                                        fontWeight: u.isTotal ? 700 : 600,
+                                        color: dim
+                                          ? "var(--muted-2)"
+                                          : (u.isTotal ? "var(--ink)" : "var(--ink-2)"),
+                                        lineHeight: 1.2, whiteSpace: "nowrap",
+                                        transition: "color 220ms ease",
+                                      }}>{u.value}</span>
+                                      <span style={{
+                                        fontFamily: "var(--sans)", fontSize: 12.5,
+                                        color: "var(--muted)", lineHeight: 1.3,
+                                        letterSpacing: "0.01em",
+                                      }}>{u.label}</span>
+                                    </span>
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
                         );
                       })}
+                      {/* Proceed / Edit row, sitting BELOW every
+                          baseline equation. The proceed button
+                          unblocks the rest of the page; the edit link
+                          lets the buyer re-open the world-fact rows
+                          without losing commitmentsConfirmed. */}
+                      {!viewOnly && !worldProceedClicked && allWorldConfirmed && (
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => setWorldProceedClicked && setWorldProceedClicked(true)}
+                            style={{
+                              display: "inline-flex", alignItems: "center", gap: 8,
+                              fontFamily: "var(--sans)", fontSize: 13, fontWeight: 600,
+                              letterSpacing: "0.02em",
+                              color: "#FFFFFF", background: "var(--green-deep)",
+                              border: "none", borderRadius: 999,
+                              padding: "9px 16px",
+                              cursor: "pointer",
+                              boxShadow: "0 6px 18px color-mix(in srgb, var(--green-deep) 28%, transparent)",
+                              transition: "transform 160ms ease, box-shadow 160ms ease",
+                              animation: "fadeIn 320ms var(--ease-expo)",
+                              whiteSpace: "nowrap",
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-1px)"; }}
+                            onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; }}
+                          >
+                            Let's proceed
+                            <IconArrowRight size={14} stroke={2.4} />
+                          </button>
+                        </div>
+                      )}
+                      {!viewOnly && worldProceedClicked && (
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => setWorldProceedClicked && setWorldProceedClicked(false)}
+                            style={{
+                              background: "var(--surface)",
+                              border: "1px solid var(--line-strong)",
+                              padding: "5px 12px",
+                              borderRadius: 999,
+                              cursor: "pointer",
+                              fontFamily: "var(--sans)", fontSize: 12,
+                              fontWeight: 600,
+                              color: "var(--ink-2)",
+                              letterSpacing: "0.01em",
+                              whiteSpace: "nowrap",
+                            }}
+                            title="Re-open the world-fact editors"
+                          >Edit</button>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -6023,65 +6031,65 @@ const MinimalLanding = (props) => {
                     const totalDisplay = allConfirmed
                       ? signedTotal(annual, totalUnit) : "?";
 
-                    const cells = [];
+                    const units = [];
                     raw.forEach((f, fi) => {
-                      if (fi > 0) cells.push({ kind: "op", text: "×" });
-                      cells.push({
-                        kind: "factor",
+                      units.push({
+                        op: fi > 0 ? "×" : null,
                         value: f.value, label: f.label,
                         confirmed: f.confirmed,
+                        isTotal: false,
                       });
                     });
-                    cells.push({ kind: "op", text: "=" });
-                    cells.push({
-                      kind: "total",
+                    units.push({
+                      op: "=",
                       value: totalDisplay, label: it.name,
                       confirmed: allConfirmed,
+                      isTotal: true,
                     });
 
                     return (
                       <div key={it.id} style={{
-                        display: "grid",
-                        gridTemplateColumns: `repeat(${cells.length}, max-content)`,
-                        gridTemplateRows: "auto auto",
-                        columnGap: 14, rowGap: 4,
-                        alignItems: "baseline",
+                        display: "flex", flexWrap: "wrap",
+                        alignItems: "flex-start",
+                        columnGap: 14, rowGap: 14,
                         fontVariantNumeric: "tabular-nums",
-                        overflowX: "auto",
                       }}>
-                        {cells.map((c, ci) => {
-                          if (c.kind === "op") {
-                            return (
-                              <div key={`v-${ci}`} style={{
-                                fontFamily: "var(--sans)", fontSize: 16,
-                                fontWeight: 400, color: "var(--muted)",
-                                lineHeight: 1.2,
-                              }}>{c.text}</div>
-                            );
-                          }
-                          const isTotal = c.kind === "total";
-                          const dim = !c.confirmed;
+                        {units.map((u, ui) => {
+                          const dim = !u.confirmed;
                           return (
-                            <div key={`v-${ci}`} style={{
-                              fontFamily: "var(--mono)",
-                              fontSize: isTotal ? 18 : 16,
-                              fontWeight: isTotal ? 700 : 600,
-                              color: dim
-                                ? "var(--muted-2)"
-                                : (isTotal ? "var(--ink)" : "var(--ink-2)"),
-                              lineHeight: 1.2, whiteSpace: "nowrap",
-                            }}>{c.value}</div>
-                          );
-                        })}
-                        {cells.map((c, ci) => {
-                          if (c.kind === "op") return <div key={`l-${ci}`} />;
-                          return (
-                            <div key={`l-${ci}`} style={{
-                              fontFamily: "var(--sans)", fontSize: 12.5,
-                              color: "var(--muted)", lineHeight: 1.3,
-                              letterSpacing: "0.01em",
-                              whiteSpace: "nowrap",
-                            }}>{c.label}</div>
+                            <div key={ui} style={{
+                              display: "inline-flex",
+                              alignItems: "baseline",
+                              gap: 10,
+                            }}>
+                              {u.op && (
+                                <span style={{
+                                  fontFamily: "var(--sans)", fontSize: 16,
+                                  fontWeight: 400, color: "var(--muted)",
+                                  lineHeight: 1.2,
+                                }}>{u.op}</span>
+                              )}
+                              <span style={{
+                                display: "inline-flex", flexDirection: "column",
+                                alignItems: "flex-start", gap: 4,
+                                minWidth: 0,
+                              }}>
+                                <span style={{
+                                  fontFamily: "var(--mono)",
+                                  fontSize: u.isTotal ? 18 : 16,
+                                  fontWeight: u.isTotal ? 700 : 600,
+                                  color: dim
+                                    ? "var(--muted-2)"
+                                    : (u.isTotal ? "var(--ink)" : "var(--ink-2)"),
+                                  lineHeight: 1.2, whiteSpace: "nowrap",
+                                }}>{u.value}</span>
+                                <span style={{
+                                  fontFamily: "var(--sans)", fontSize: 12.5,
+                                  color: "var(--muted)", lineHeight: 1.3,
+                                  letterSpacing: "0.01em",
+                                }}>{u.label}</span>
+                              </span>
+                            </div>
                           );
                         })}
                       </div>
