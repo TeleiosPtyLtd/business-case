@@ -34,8 +34,29 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
   const [error, setError]       = React.useState(null);
   const [copied, setCopied]     = React.useState(false);
   const [justUpdatedAt, setJustUpdatedAt] = React.useState(null);
+  // Owner-only stats fetched from /api/share/:id/meta — viewer count,
+  // last-seen, subscriber count. Null until the fetch resolves; stays
+  // null on legacy shares whose server doesn't expose the endpoint, in
+  // which case the dialog quietly falls back to the basic meta block.
+  const [meta, setMeta] = React.useState(null);
 
   const canCreate = password.length >= 4 && password === confirm && status !== "uploading";
+
+  // Pull the stats block whenever the modal opens in update mode and
+  // again after a successful update (so freshly-edited timestamps
+  // reflect immediately). Skips silently if the legacy share doesn't
+  // have an ownerToken stored locally.
+  React.useEffect(() => {
+    if (mode !== "update" || !existingShare?.id || !existingShare?.ownerToken) return;
+    const baseUrl = SHARE_ENDPOINT.replace(/\/$/, "");
+    const url = `${baseUrl}/${encodeURIComponent(existingShare.id)}/meta`;
+    let cancelled = false;
+    fetch(url, { headers: { "Authorization": `Bearer ${existingShare.ownerToken}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!cancelled && d) setMeta(d); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [mode, existingShare?.id, existingShare?.ownerToken, justUpdatedAt]);
 
   // First-time share OR explicit "share as new"
   const upload = async () => {
@@ -152,6 +173,27 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
             <div>Last updated: {__relativeTime(justUpdatedAt || existingShare.lastUpdatedAt) || "—"}</div>
             {existingShare.expiresAt && (
               <div>Expires: {new Date(existingShare.expiresAt).toLocaleDateString()}</div>
+            )}
+            {meta && (
+              <div style={{
+                marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--line)",
+              }}>
+                <div>
+                  {meta.viewerCount === 0
+                    ? "Not opened yet"
+                    : `Opened by ${meta.viewerCount} ${meta.viewerCount === 1 ? "person" : "people"}`}
+                  {meta.lastViewedAt && (
+                    <span style={{ color: "var(--muted-2)" }}>
+                      {" · most recent "}{__relativeTime(meta.lastViewedAt)}
+                    </span>
+                  )}
+                </div>
+                <div>
+                  {meta.subscriberCount === 0
+                    ? "No subscribers yet"
+                    : `${meta.subscriberCount} ${meta.subscriberCount === 1 ? "subscriber" : "subscribers"} will be emailed on update`}
+                </div>
+              </div>
             )}
           </div>
           {error && <ErrorBox text={error} />}
