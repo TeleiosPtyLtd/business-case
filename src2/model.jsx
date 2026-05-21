@@ -314,6 +314,69 @@ function computeIRR(items, A) {
   return (lo + hi) / 2;
 }
 
+// Payback — the cash-tight-customer's first question.
+//
+// Works on *nominal* net cashflow (benefit − cost, no discounting) so the
+// chart and the number agree pixel-for-number with what the eye sees. The
+// existing computeModel().npv stays as the discounted summary; this one
+// answers "when do I get my money back?"
+//
+// Returns:
+//   yearly       — net per year, length HORIZON, signed
+//   cumulative   — running sum of yearly, length HORIZON, signed
+//   trough       — { value, yearIdx } most-negative point on cumulative.
+//                  value ≤ 0; yearIdx is the 0-indexed year that ends at
+//                  the trough. When the case never goes negative, returns
+//                  { value: 0, yearIdx: 0 }.
+//   paybackYear  — continuous year-position where cumulative crosses 0
+//                  going from negative to non-negative AFTER the trough.
+//                  year-position 1.0 = end of year 1; 2.72 = 72% through
+//                  year 3. Null if cumulative never recovers to ≥ 0
+//                  within the horizon. Zero if cumulative is ≥ 0 from
+//                  the start (no upfront outlay → "immediately").
+//   endingValue  — cumulative[HORIZON - 1].
+function computePayback(items, A) {
+  const yearly = Array(HORIZON).fill(0);
+  for (const it of items) {
+    const s = computeItemSeries(it, A);
+    const sign = it.kind === "benefit" ? 1 : -1;
+    for (let y = 0; y < HORIZON; y++) yearly[y] += sign * s.cash[y];
+  }
+  const cumulative = [];
+  let acc = 0;
+  for (let y = 0; y < HORIZON; y++) { acc += yearly[y]; cumulative.push(acc); }
+
+  let troughVal = 0, troughIdx = 0;
+  for (let y = 0; y < HORIZON; y++) {
+    if (cumulative[y] < troughVal) { troughVal = cumulative[y]; troughIdx = y; }
+  }
+
+  let paybackYear = null;
+  if (troughVal >= 0) {
+    paybackYear = 0;
+  } else {
+    for (let y = troughIdx; y < HORIZON; y++) {
+      if (cumulative[y] >= 0) {
+        const prev = y > 0 ? cumulative[y - 1] : 0;
+        if (prev < 0 && yearly[y] > 0) {
+          paybackYear = y + (-prev) / yearly[y];
+        } else {
+          paybackYear = y + 1;
+        }
+        break;
+      }
+    }
+  }
+
+  return {
+    yearly,
+    cumulative,
+    paybackYear,
+    trough: { value: troughVal, yearIdx: troughIdx },
+    endingValue: cumulative[HORIZON - 1] || 0,
+  };
+}
+
 // Sensitivity: per-assumption ±25% by default; respect optional
 // sensitivityRange = { lo, hi } where lo/hi are multipliers on the base value.
 // Fourth arg accepts either a number (legacy: defaultDelta) or an options
@@ -387,7 +450,7 @@ Object.assign(window, {
   DEFAULT_ASSUMPTIONS, DEFAULT_ITEMS, BASELINE,
   PROJECT_META, READ_ONLY,
   CONFIG_VALIDATION,
-  computeModel, computeItemSeries, computeIRR,
+  computeModel, computeItemSeries, computeIRR, computePayback,
   computeSensitivity, splitMultiplicativeFactors,
   validateFormula, validateConfig, extractAssumptionIds, compileFormula,
   fmtMoney, fmtMoneyExact, fmtPct, niceRound,

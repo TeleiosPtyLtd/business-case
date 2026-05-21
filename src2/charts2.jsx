@@ -284,4 +284,204 @@ const HoverStackedBars = ({
   );
 };
 
-Object.assign(window, { HoverStackedBars });
+// CumulativeCashflow — single-line chart for the cash-tight-customer's
+// first question: when do I get my money back?
+//
+// Visual register matches FlowOverTime: dashed grid on --line, solid
+// zero baseline on --ink-2 with crispEdges, italic serif year labels,
+// no chart-chrome legend. Three on-curve dots mark the values the prose
+// above the chart has just named — red trough (max out-of-pocket), ink
+// payback crossing, green endpoint. No labels on the dots: the prose
+// carries the words, the chart shows the shape.
+//
+// Props:
+//   yearly       — net per year (length H), signed
+//   cumulative   — running sum of yearly (length H), signed
+//   paybackYear  — continuous year-position where cumulative crosses 0;
+//                  null if never within horizon; 0 if positive from start
+//   trough       — { value, yearIdx } most-negative cumulative point
+//   endingValue  — cumulative[H-1]
+//   horizon
+const CumulativeCashflow = ({
+  yearly, cumulative, paybackYear, trough, endingValue, horizon,
+  height = 220,
+}) => {
+  const wrapRef = React.useRef(null);
+  const [measured, setMeasured] = React.useState(640);
+  React.useLayoutEffect(() => {
+    if (!wrapRef.current) return;
+    const el = wrapRef.current;
+    const apply = () => {
+      const w = el.getBoundingClientRect().width;
+      if (w > 0) setMeasured(Math.max(320, Math.round(w)));
+    };
+    apply();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", apply);
+      return () => window.removeEventListener("resize", apply);
+    }
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const width = measured;
+
+  const N = Math.max(1, horizon || (cumulative?.length ?? 0));
+  if (!cumulative || cumulative.length === 0) return null;
+
+  const padL = 12, padR = 12, padT = 16, padB = 30;
+  const innerW = width - padL - padR;
+  const innerH = height - padT - padB;
+
+  // Symmetric value range so the zero line sits where the data crosses it.
+  // The chart never auto-pans away from zero — the reader needs the zero
+  // line to be a visual anchor at a stable position.
+  const yMaxData = Math.max(0, ...cumulative);
+  const yMinData = Math.min(0, ...cumulative);
+  const yMax = yMaxData === 0 && yMinData === 0 ? 1 : yMaxData;
+  const yMin = yMinData;
+  const span = (yMax - yMin) || 1;
+
+  // x maps continuous year-position (0..N) onto the inner width.
+  const xFor = (yp) => padL + (yp / N) * innerW;
+  const yFor = (v)  => padT + ((yMax - v) / span) * innerH;
+  const zeroY = yFor(0);
+
+  // Line points — starts at (year-position 0, value 0), then each
+  // cumulative[i] at year-position (i+1).
+  const points = [{ x: xFor(0), y: zeroY }];
+  for (let i = 0; i < cumulative.length; i++) {
+    points.push({ x: xFor(i + 1), y: yFor(cumulative[i]) });
+  }
+  const pathD = points.map((p, i) =>
+    `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`
+  ).join(" ");
+
+  // Subtle area fills: red below zero, green above zero. Built as a closed
+  // path along the line, then clipped against the zero axis using two
+  // overlay rectangles in `mask` (white = visible, black = hidden).
+  const areaD = `${pathD} L${xFor(N).toFixed(1)},${zeroY.toFixed(1)} L${xFor(0).toFixed(1)},${zeroY.toFixed(1)} Z`;
+
+  const maskId = React.useMemo(
+    () => `cf-mask-${Math.random().toString(36).slice(2, 8)}`,
+    []
+  );
+
+  const showTrough = trough && trough.value < 0;
+  const showCrossing = paybackYear != null && paybackYear > 0
+    && paybackYear <= N && showTrough;
+  const showEndpoint = endingValue !== 0 || cumulative.some(v => v !== 0);
+
+  const troughX = showTrough ? xFor(trough.yearIdx + 1) : 0;
+  const troughY = showTrough ? yFor(trough.value) : 0;
+  const crossX  = showCrossing ? xFor(paybackYear) : 0;
+  const endX    = xFor(N);
+  const endY    = yFor(endingValue);
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative", width: "100%" }}>
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}
+           role="img" style={{ display: "block" }}>
+        <defs>
+          <mask id={`${maskId}-above`}>
+            <rect x="0" y="0" width={width} height={zeroY} fill="white" />
+            <rect x="0" y={zeroY} width={width} height={height - zeroY} fill="black" />
+          </mask>
+          <mask id={`${maskId}-below`}>
+            <rect x="0" y="0" width={width} height={zeroY} fill="black" />
+            <rect x="0" y={zeroY} width={width} height={height - zeroY} fill="white" />
+          </mask>
+        </defs>
+
+        {/* Subtle area fills — green above zero, red below. Low opacity so
+            they read as a tint, not a block. */}
+        <path d={areaD} fill="var(--green-deep)" fillOpacity="0.08"
+              mask={`url(#${maskId}-above)`} />
+        <path d={areaD} fill="var(--red-deep)" fillOpacity="0.08"
+              mask={`url(#${maskId}-below)`} />
+
+        {/* Zero baseline — solid, crisp, matches FlowOverTime axis style. */}
+        <line x1={padL} x2={width - padR} y1={zeroY} y2={zeroY}
+              stroke="var(--ink-2)" strokeWidth="1.25"
+              shapeRendering="crispEdges" />
+
+        {/* Year tick lines — short, dashed, hairline at each year boundary.
+            Restraint over grid coverage. */}
+        {Array.from({ length: N - 1 }).map((_, i) => {
+          const x = xFor(i + 1);
+          return (
+            <line key={`tick-${i}`} x1={x} x2={x}
+                  y1={padT} y2={padT + innerH}
+                  stroke="var(--line)" strokeWidth="1"
+                  strokeDasharray="1 4"
+                  shapeRendering="crispEdges" />
+          );
+        })}
+
+        {/* The line itself. */}
+        <path d={pathD} fill="none"
+              stroke="var(--ink)" strokeWidth="1.75"
+              strokeLinejoin="round" strokeLinecap="round" />
+
+        {/* Trough — max out-of-pocket. Vertical guide from dot to axis. */}
+        {showTrough && (
+          <g>
+            <line x1={troughX} x2={troughX} y1={troughY} y2={padT + innerH}
+                  stroke="var(--red-deep)" strokeOpacity="0.32"
+                  strokeWidth="1" strokeDasharray="2 3" />
+            <circle cx={troughX} cy={troughY} r="4.5"
+                    fill="var(--red-deep)" />
+            <circle cx={troughX} cy={troughY} r="8"
+                    fill="var(--red-deep)" fillOpacity="0.18" />
+          </g>
+        )}
+
+        {/* Payback crossing — sits exactly on the zero line. Vertical guide
+            down to the year axis emphasises which year it falls in. */}
+        {showCrossing && (
+          <g>
+            <line x1={crossX} x2={crossX} y1={zeroY} y2={padT + innerH}
+                  stroke="var(--ink)" strokeOpacity="0.3"
+                  strokeWidth="1" strokeDasharray="2 3" />
+            <circle cx={crossX} cy={zeroY} r="4.5"
+                    fill="var(--ink)" />
+            <circle cx={crossX} cy={zeroY} r="8"
+                    fill="var(--ink)" fillOpacity="0.16" />
+          </g>
+        )}
+
+        {/* Endpoint — final cumulative value at end of horizon. */}
+        {showEndpoint && (
+          <g>
+            <circle cx={endX} cy={endY} r="4.5"
+                    fill={endingValue >= 0 ? "var(--green-deep)" : "var(--red-deep)"} />
+            <circle cx={endX} cy={endY} r="8"
+                    fill={endingValue >= 0 ? "var(--green-deep)" : "var(--red-deep)"}
+                    fillOpacity="0.18" />
+          </g>
+        )}
+
+        {/* Year labels — italic serif var(--muted), centered under each
+            year span. Matches FlowOverTime's x-axis treatment. */}
+        {Array.from({ length: N }).map((_, i) => {
+          const cx = xFor(i + 0.5);
+          const isPayback = showCrossing
+            && paybackYear > i && paybackYear <= i + 1;
+          return (
+            <text key={`yr-${i}`} x={cx} y={height - 10}
+                  fontSize="14" fontStyle="italic"
+                  fontFamily="var(--serif)"
+                  textAnchor="middle"
+                  fill={isPayback ? "var(--ink)" : "var(--muted)"}
+                  fontWeight={isPayback ? 500 : 400}
+                  letterSpacing="-0.005em">
+              Year {i + 1}
+            </text>
+          );
+        })}
+      </svg>
+    </div>
+  );
+};
+
+Object.assign(window, { HoverStackedBars, CumulativeCashflow });

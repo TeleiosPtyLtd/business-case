@@ -97,6 +97,21 @@ window.PROJECT_CONFIG = {
       description: "Replace with the target outcome the intervention promises to deliver.",
       sensitivityRange: { lo: 0.3, hi: 2.0 } },
 
+    // ---- Cost assumptions (the buyer pays these — drive the cost items) -----
+    { id: "implementation_cost", label: "One-off setup cost",
+      value: 15000, unit: "$", step: 1000, group: "Investment", icon: "IconDollar",
+      controllable: true,
+      source: "Replace with your quote.",
+      description: "One-off spend to stand the intervention up — implementation, hardware, onboarding, training.",
+      sensitivityRange: { lo: 0.7, hi: 1.5 } },
+
+    { id: "annual_running_cost", label: "Annual running cost",
+      value: 2000, unit: "$/yr", step: 500, group: "Investment", icon: "IconDollar",
+      controllable: true,
+      source: "Replace with your quote.",
+      description: "Recurring spend each year to keep the intervention live — licensing, support, hosting, maintenance.",
+      sensitivityRange: { lo: 0.7, hi: 1.5 } },
+
     // ---- Financial ----------------------------------------------------------
     { id: "discount_rate", label: "Discount rate",
       value: 0, unit: "%", step: 0.5, group: "Financial", icon: "IconPercent",
@@ -122,12 +137,22 @@ window.PROJECT_CONFIG = {
   // Costs have no scope. Use `lump: true` for one-off costs.
   // ---------------------------------------------------------------------------
   items: [
-    // Costs
-    { id: "cost_implementation", name: "Replace with what you spend money on", kind: "cost",
+    // Costs — one upfront, one ongoing. The shapes complement: the lump
+    // creates the year-1 trough on the cashflow chart, the recurring item
+    // sets a steady drag on each subsequent year. Replace the names and
+    // value-chain descriptions with your specifics; the assumption values
+    // above carry the actual dollars.
+    { id: "cost_setup", name: "Replace with one-off setup spend", kind: "cost",
       lump: true, startYear: 1,
-      gross: "0",
-      desc: "Replace with a 1–2 sentence value-chain: what triggers this cost and what's paid for.",
-      uses: [] },
+      gross: "implementation_cost",
+      desc: "Replace with the 1–2 sentence value chain: what the upfront spend buys (kit, integration, training) and when it lands.",
+      uses: ["implementation_cost"] },
+
+    { id: "cost_running", name: "Replace with each year's running cost", kind: "cost",
+      lump: false, startYear: 1,
+      gross: "annual_running_cost",
+      desc: "Replace with the 1–2 sentence value chain: what each year's ongoing spend covers (licensing, support, hosting, maintenance).",
+      uses: ["annual_running_cost"] },
 
     // Benefits
     { id: "benefit_primary", name: "Replace with what the buyer gains",

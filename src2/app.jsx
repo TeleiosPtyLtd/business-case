@@ -273,6 +273,13 @@ const App = () => {
     () => computeIRR(summaryItems, A_eff),
     [summaryItems, A_eff]
   );
+  // Payback data drives the "when does the money come back?" panel that
+  // sits between the Total row and Risks. Nominal cashflow (not PV) so
+  // the chart and the prose agree pixel-for-number with what the eye sees.
+  const paybackData = React.useMemo(
+    () => computePayback(summaryItems, A_eff),
+    [summaryItems, A_eff]
+  );
 
   // Wizard payload: { item, newAssumptions?, isEdit? }.
   const onAddItem = (payload) => {
@@ -532,6 +539,7 @@ const App = () => {
         assumptions={assumptionsEff}
         setAssumption={setAssumption}
         irrValue={irrValue}
+        paybackData={paybackData}
         horizon={HORIZON}
         viewOnly={viewOnly}
         isMobile={isMobile}
@@ -6314,6 +6322,88 @@ const MinimalLanding = (props) => {
         niceRounding={niceRounding}
         setNiceRounding={setNiceRounding}
       />
+
+      {/* CASHFLOW PANEL — answers the cash-tight customer's first two
+          questions: how deep does this dig me before I see it back, and
+          when does the line cross zero? Italic-serif prose names the
+          three values (max out-of-pocket / payback year / ending
+          position); the single-line chart confirms the shape. Same
+          editorial register as the Risks lead-in below. */}
+      {(() => {
+        const pb = props.paybackData;
+        if (!pb || !pb.cumulative || pb.cumulative.length === 0) return null;
+        const hasMotion = pb.yearly.some(v => Math.abs(v) >= 0.5)
+          || pb.cumulative.some(v => Math.abs(v) >= 0.5);
+        if (!hasMotion) return null;
+
+        const troughAbs = Math.abs(pb.trough.value);
+        const endingAbs = Math.abs(pb.endingValue);
+        const paysBackInHorizon = pb.paybackYear != null && pb.paybackYear > 0;
+        const startsPositive = pb.paybackYear === 0;
+        const paybackDisplayYear = paysBackInHorizon
+          ? Math.max(1, Math.ceil(pb.paybackYear))
+          : null;
+
+        const ValBad  = ({ children }) => (
+          <strong style={{ fontStyle: "normal", fontWeight: 500, color: "var(--red-deep)" }}>{children}</strong>
+        );
+        const ValGood = ({ children }) => (
+          <strong style={{ fontStyle: "normal", fontWeight: 500, color: "var(--green-deep)" }}>{children}</strong>
+        );
+        const ValInk = ({ children }) => (
+          <strong style={{ fontStyle: "normal", fontWeight: 500, color: "var(--ink)" }}>{children}</strong>
+        );
+
+        let prose;
+        if (startsPositive) {
+          prose = (
+            <>This case pays from year 1 — no upfront outlay to absorb. By the end of year {horizon} you're <ValGood>+{fmtMoney(endingAbs, { exact: true })}</ValGood> ahead.</>
+          );
+        } else if (paysBackInHorizon && pb.endingValue >= 0) {
+          prose = (
+            <>You'd be up to <ValBad>−{fmtMoney(troughAbs, { exact: true })}</ValBad> out of pocket before any of it comes back. You're square in <ValInk>year {paybackDisplayYear}</ValInk>, and <ValGood>+{fmtMoney(endingAbs, { exact: true })}</ValGood> ahead by the end of year {horizon}.</>
+          );
+        } else if (paysBackInHorizon && pb.endingValue < 0) {
+          prose = (
+            <>You'd be up to <ValBad>−{fmtMoney(troughAbs, { exact: true })}</ValBad> out of pocket. You're briefly square in <ValInk>year {paybackDisplayYear}</ValInk>, but later costs put you <ValBad>−{fmtMoney(endingAbs, { exact: true })}</ValBad> under again by the end of year {horizon}.</>
+          );
+        } else {
+          prose = (
+            <>You'd be up to <ValBad>−{fmtMoney(troughAbs, { exact: true })}</ValBad> out of pocket. By the end of year {horizon} you'd still be <ValBad>−{fmtMoney(endingAbs, { exact: true })}</ValBad> under — this case doesn't pay back within the horizon you set.</>
+          );
+        }
+
+        return (
+          <div style={{
+            marginTop: isMobile ? 32 : 56,
+            opacity: modalOpen ? 0.25 : 1,
+            filter: modalOpen ? "blur(3px)" : "none",
+            transition: "opacity 360ms ease, filter 360ms ease",
+            pointerEvents: modalOpen ? "none" : "auto",
+          }}>
+            <div style={{
+              fontSize: 11, color: "var(--muted-2)", letterSpacing: "0.1em",
+              textTransform: "uppercase", fontWeight: 500,
+              marginBottom: 14,
+            }}>Cashflow over time</div>
+            <p style={{
+              fontFamily: "var(--serif)", fontStyle: "italic",
+              fontSize: 19, lineHeight: 1.55, color: "var(--ink-2)",
+              margin: "0 0 24px", letterSpacing: "-0.005em",
+            }}>
+              {prose}
+            </p>
+            <CumulativeCashflow
+              yearly={pb.yearly}
+              cumulative={pb.cumulative}
+              paybackYear={pb.paybackYear}
+              trough={pb.trough}
+              endingValue={pb.endingValue}
+              horizon={horizon}
+            />
+          </div>
+        );
+      })()}
 
       {/* BUT — honest risk disclosure. Same operator-in-margin pattern as
           IF / AND / THEN. Risks are split into two locus-grouped
