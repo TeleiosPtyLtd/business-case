@@ -1034,7 +1034,7 @@ const NetBenefitRow = ({
         display: "flex", flexDirection: "column", gap: 2,
         visibility: forOverlay ? "visible" : (elevated ? "hidden" : "visible"),
       }}>
-        <span>Total over {horizon} {horizon === 1 ? "year" : "years"}</span>
+        <span>Total over {timelineLabel(horizon, PERIODS_PER_YEAR)}</span>
         <span style={{
           fontFamily: "var(--sans)", fontSize: 12, fontWeight: 500,
           color: "var(--muted)", letterSpacing: "0.01em",
@@ -2040,7 +2040,7 @@ const CostItemRow = ({ item, model, A, assumptions, setAssumption, viewOnly, isE
               <span style={{
                 fontSize: 12, color: "var(--muted-2)", fontFamily: "var(--mono)",
                 marginLeft: 10, fontWeight: 400,
-              }}>over {horizon} years</span>
+              }}>over {timelineLabel(horizon, PERIODS_PER_YEAR)}</span>
             </div>
             {item.desc && (
               <div style={{ fontSize: 13, lineHeight: 1.6, color: "var(--ink-2)" }}>
@@ -2945,25 +2945,46 @@ const FlowOverTime = ({
 }) => {
   if (!items || items.length === 0) return null;
   if (!horizon || horizon < 1) return null;
+  const ppy   = Math.max(1, Math.round(PERIODS_PER_YEAR || 1));
+  const total = horizon * ppy;
+  const unit  = periodUnit(ppy);
+  // Prefer the period-resolution series when available so the panel
+  // matches the cumulative chart's cadence. Fall back to yearly cash
+  // for any legacy item series.
+  const seriesFor = (it) => model.perItem[it.id]?.cashPeriods
+    || model.perItem[it.id]?.cash
+    || [];
   // Skip items with zero cash flow (qualitative + zero-valued items).
   const cashItems = items.filter(it => {
-    const series = model.perItem[it.id];
-    if (!series || !Array.isArray(series.cash)) return false;
-    return series.cash.some(v => Math.abs(v) >= 0.5);
+    const s = seriesFor(it);
+    return s.length > 0 && s.some(v => Math.abs(v) >= 0.5);
   });
   if (cashItems.length === 0) return null;
-  // Year-by-year totals across all cash items.
-  const yearly = Array.from({ length: horizon }, (_, y) => {
+  // Per-period totals across all cash items.
+  const slots = Array.from({ length: total }, (_, p) => {
     let sum = 0;
     cashItems.forEach(it => {
-      const v = model.perItem[it.id]?.cash?.[y] || 0;
+      const s = seriesFor(it);
+      // When an item series is yearly-only, replicate the year value
+      // evenly across its periods so the bars still represent it.
+      const v = s.length === total
+        ? s[p]
+        : (s.length === horizon ? (s[Math.floor(p / ppy)] || 0) / ppy : 0);
       sum += Math.abs(v);
     });
     return sum;
   });
-  const max = Math.max(...yearly, 1);
-  if (yearly.every(v => v < 0.5)) return null;
+  const max = Math.max(...slots, 1);
+  if (slots.every(v => v < 0.5)) return null;
   const isDim = (id) => hoveredId && hoveredId !== id;
+  // With many bars, downsize the per-bar label so 12 quarters fit at
+  // 1080px without truncation. Hide the $-amount inline once ppy is
+  // high enough that the column gets cramped — the chart still tells
+  // the shape story.
+  const showAmounts = total <= 6;
+  const colGap   = ppy === 1 ? 14 : (ppy <= 4 ? 6 : 3);
+  const labelFs  = ppy === 1 ? 14 : (ppy <= 4 ? 12 : 10);
+  const amountFs = ppy === 1 ? 13 : 11;
   return (
     <div style={{
       marginTop: 24,
@@ -2977,46 +2998,48 @@ const FlowOverTime = ({
       }}>Over time</p>
       <div style={{
         display: "grid",
-        gridTemplateColumns: `repeat(${horizon}, 1fr)`,
-        columnGap: 14,
+        gridTemplateColumns: `repeat(${total}, 1fr)`,
+        columnGap: colGap,
         alignItems: "end",
         height: 160,
       }}>
-        {yearly.map((total, yi) => {
-          // Cap barH so label + bar fit inside the 160px cell. The
-          // label takes ~22px of vertical space; leave a few pixels
-          // of headroom so flex-end never overflows below the cell.
-          const barH = total < 0.5 ? 2 : Math.max(4, (total / max) * 130);
+        {slots.map((slot, pi) => {
+          const barH = slot < 0.5 ? 2 : Math.max(4, (slot / max) * (showAmounts ? 130 : 150));
           return (
-            <div key={yi} style={{
+            <div key={pi} style={{
               display: "flex", flexDirection: "column",
               alignItems: "center", justifyContent: "flex-end",
               height: "100%",
             }}>
-              <div style={{
-                fontFamily: "var(--mono)", fontSize: 13, fontWeight: 600,
-                color: accent,
-                opacity: total < 0.5 ? 0.4 : 0.85,
-                marginBottom: 8,
-                fontVariantNumeric: "tabular-nums",
-                letterSpacing: "-0.005em",
-                whiteSpace: "nowrap",
-              }}>
-                {total < 0.5 ? "—" : `${sign}${fmtMoney(total, { exact: true })}`}
-              </div>
+              {showAmounts && (
+                <div style={{
+                  fontFamily: "var(--mono)", fontSize: amountFs, fontWeight: 600,
+                  color: accent,
+                  opacity: slot < 0.5 ? 0.4 : 0.85,
+                  marginBottom: 8,
+                  fontVariantNumeric: "tabular-nums",
+                  letterSpacing: "-0.005em",
+                  whiteSpace: "nowrap",
+                }}>
+                  {slot < 0.5 ? "—" : `${sign}${fmtMoney(slot, { exact: true })}`}
+                </div>
+              )}
               <div style={{
                 width: "100%",
-                maxWidth: 56,
+                maxWidth: ppy === 1 ? 56 : 36,
                 height: barH,
-                // Column-reverse so iterating cashItems in impact-desc
-                // order stacks biggest at the bottom (visual gravity).
                 display: "flex", flexDirection: "column-reverse",
                 overflow: "hidden",
               }}>
                 {cashItems.map(it => {
-                  const v = Math.abs(model.perItem[it.id]?.cash?.[yi] || 0);
-                  if (v < 0.5 || total < 0.5) return null;
-                  const segH = (v / total) * 100;
+                  const s = seriesFor(it);
+                  const v = Math.abs(
+                    s.length === total
+                      ? s[pi]
+                      : (s.length === horizon ? (s[Math.floor(pi / ppy)] || 0) / ppy : 0)
+                  );
+                  if (v < 0.5 || slot < 0.5) return null;
+                  const segH = (v / slot) * 100;
                   const baseOp = (itemColors && itemColors[it.id]?.opacity) ?? 0.4;
                   const dim = isDim(it.id);
                   const hot = hoveredId === it.id;
@@ -3030,8 +3053,6 @@ const FlowOverTime = ({
                         height: `${segH}%`,
                         background: accent,
                         opacity: dim ? baseOp * 0.25 : (hot ? Math.min(baseOp + 0.25, 0.95) : baseOp),
-                        // Hairline gap between segments rendered as a
-                        // top border the colour of the page paper.
                         borderTop: "1px solid var(--bg)",
                         cursor: "default",
                         transition: "opacity 160ms ease",
@@ -3044,26 +3065,33 @@ const FlowOverTime = ({
           );
         })}
       </div>
-      {/* X-axis line as an explicit 1px block element. Sequential
-          block layout guarantees it sits BELOW the bars container
-          with no border-math or box-sizing surprises. */}
       <div style={{
         height: 1,
         background: "var(--ink-2)",
       }} />
       <div style={{
         display: "grid",
-        gridTemplateColumns: `repeat(${horizon}, 1fr)`,
-        columnGap: 14,
+        gridTemplateColumns: `repeat(${total}, 1fr)`,
+        columnGap: colGap,
         paddingTop: 10,
       }}>
-        {yearly.map((_, i) => (
-          <div key={i} style={{
-            fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 14,
-            color: "var(--muted)", textAlign: "center",
-            letterSpacing: "-0.005em",
-          }}>Year {i + 1}</div>
-        ))}
+        {slots.map((_, i) => {
+          // Build the per-bar label. For sub-yearly cases use the short
+          // tag (Q1..Q12 / M1..M36); year case keeps the long "Year N".
+          let label;
+          if (ppy === 1)       label = `Year ${i + 1}`;
+          else if (ppy === 4)  label = `Q${i + 1}`;
+          else if (ppy === 12) label = `M${i + 1}`;
+          else                 label = `${unit.short}${i + 1}`;
+          return (
+            <div key={i} style={{
+              fontFamily: "var(--serif)", fontStyle: "italic",
+              fontSize: labelFs,
+              color: "var(--muted)", textAlign: "center",
+              letterSpacing: "-0.005em",
+            }}>{label}</div>
+          );
+        })}
       </div>
     </div>
   );
@@ -6214,7 +6242,7 @@ const MinimalLanding = (props) => {
                   ...conditionProse,
                   fontStyle: "normal", fontWeight: 500, color: "var(--ink)",
                 }}>
-                  Over the next {horizon} {horizon === 1 ? "year" : "years"}, given the assumptions you entered, we expect:
+                  Over the next {timelineLabel(horizon, PERIODS_PER_YEAR)}, given the assumptions you entered, we expect:
                 </p>
               </div>
             )}
@@ -6259,7 +6287,7 @@ const MinimalLanding = (props) => {
           setLevelOverride={setLevelOverride}
           showBonus={showBonus}
           setShowBonus={setShowBonus}
-          grandTotalLabel={`Total over ${horizon} ${horizon === 1 ? "year" : "years"}`}
+          grandTotalLabel={`Total over ${timelineLabel(horizon, PERIODS_PER_YEAR)}`}
           grandTotalValue={`${npvDisp < 0 ? "−" : ""}${fmtMoney(Math.abs(npvDisp), { exact: true })}`}
           grandTotalAccent={npvDisp >= 0 ? "var(--green-deep)" : "var(--red-deep)"}
         />
@@ -6340,9 +6368,23 @@ const MinimalLanding = (props) => {
         const endingAbs = Math.abs(pb.endingValue);
         const paysBackInHorizon = pb.paybackYear != null && pb.paybackYear > 0;
         const startsPositive = pb.paybackYear === 0;
-        const paybackDisplayYear = paysBackInHorizon
-          ? Math.max(1, Math.ceil(pb.paybackYear))
-          : null;
+        // Period-aware payback label. With periodsPerYear=4 we say "Q9"
+        // (using paybackPeriod rounded up); otherwise "year N".
+        const ppy = pb.periodsPerYear || 1;
+        const u = periodUnit(ppy);
+        const paybackPositionLabel = (() => {
+          if (!paysBackInHorizon) return null;
+          if (ppy === 1) {
+            const yr = Math.max(1, Math.ceil(pb.paybackYear));
+            return `year ${yr}`;
+          }
+          const pIdx = Math.max(1, Math.ceil(pb.paybackPeriod || (pb.paybackYear * ppy)));
+          return `${u.short}${pIdx}`;
+        })();
+        const endLabel = ppy === 1
+          ? `year ${horizon}`
+          : `${u.short}${horizon * ppy}`;
+        const startLabel = ppy === 1 ? "year 1" : `${u.short}1`;
 
         const ValBad  = ({ children }) => (
           <strong style={{ fontStyle: "normal", fontWeight: 500, color: "var(--red-deep)" }}>{children}</strong>
@@ -6357,19 +6399,19 @@ const MinimalLanding = (props) => {
         let prose;
         if (startsPositive) {
           prose = (
-            <>This case pays from year 1 — no upfront outlay to absorb. By the end of year {horizon} you're <ValGood>+{fmtMoney(endingAbs, { exact: true })}</ValGood> ahead.</>
+            <>This case pays from {startLabel} — no upfront outlay to absorb. By the end of {endLabel} you're <ValGood>+{fmtMoney(endingAbs, { exact: true })}</ValGood> ahead.</>
           );
         } else if (paysBackInHorizon && pb.endingValue >= 0) {
           prose = (
-            <>You'd be up to <ValBad>−{fmtMoney(troughAbs, { exact: true })}</ValBad> out of pocket before any of it comes back. You're square in <ValInk>year {paybackDisplayYear}</ValInk>, and <ValGood>+{fmtMoney(endingAbs, { exact: true })}</ValGood> ahead by the end of year {horizon}.</>
+            <>You'd be up to <ValBad>−{fmtMoney(troughAbs, { exact: true })}</ValBad> out of pocket before any of it comes back. You're square in <ValInk>{paybackPositionLabel}</ValInk>, and <ValGood>+{fmtMoney(endingAbs, { exact: true })}</ValGood> ahead by the end of {endLabel}.</>
           );
         } else if (paysBackInHorizon && pb.endingValue < 0) {
           prose = (
-            <>You'd be up to <ValBad>−{fmtMoney(troughAbs, { exact: true })}</ValBad> out of pocket. You're briefly square in <ValInk>year {paybackDisplayYear}</ValInk>, but later costs put you <ValBad>−{fmtMoney(endingAbs, { exact: true })}</ValBad> under again by the end of year {horizon}.</>
+            <>You'd be up to <ValBad>−{fmtMoney(troughAbs, { exact: true })}</ValBad> out of pocket. You're briefly square in <ValInk>{paybackPositionLabel}</ValInk>, but later costs put you <ValBad>−{fmtMoney(endingAbs, { exact: true })}</ValBad> under again by the end of {endLabel}.</>
           );
         } else {
           prose = (
-            <>You'd be up to <ValBad>−{fmtMoney(troughAbs, { exact: true })}</ValBad> out of pocket. By the end of year {horizon} you'd still be <ValBad>−{fmtMoney(endingAbs, { exact: true })}</ValBad> under — this case doesn't pay back within the horizon you set.</>
+            <>You'd be up to <ValBad>−{fmtMoney(troughAbs, { exact: true })}</ValBad> out of pocket. By the end of {endLabel} you'd still be <ValBad>−{fmtMoney(endingAbs, { exact: true })}</ValBad> under — this case doesn't pay back within the horizon you set.</>
           );
         }
 
@@ -6395,11 +6437,12 @@ const MinimalLanding = (props) => {
             </p>
             <CumulativeCashflow
               yearly={pb.yearly}
-              cumulative={pb.cumulative}
+              cumulative={pb.cumulativePeriods || pb.cumulative}
               paybackYear={pb.paybackYear}
               trough={pb.trough}
               endingValue={pb.endingValue}
               horizon={horizon}
+              periodsPerYear={pb.periodsPerYear || 1}
             />
           </div>
         );

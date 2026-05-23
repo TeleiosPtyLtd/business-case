@@ -10,6 +10,14 @@ const __CFG = window.PROJECT_CONFIG || {};
 const HORIZON = __CFG.horizon || 7;
 const YEARS   = HORIZON;
 
+// Sub-yearly time resolution. periodsPerYear=1 is the legacy yearly engine.
+// Set to 4 for quarters, 12 for months. The headline display (year-X totals,
+// And/Then breakdowns) keeps rolling up to YEARS — only the cumulative
+// cashflow chart and the ramp interpolation actually use period resolution.
+const PERIODS_PER_YEAR = Math.max(1, Math.round(Number(__CFG.periodsPerYear) || 1));
+const PERIODS          = HORIZON * PERIODS_PER_YEAR;
+const MONTHS_PER_PERIOD = 12 / PERIODS_PER_YEAR;
+
 // =========================================================================
 // FORMULA COMPILER (sandboxed)
 //
@@ -146,6 +154,16 @@ function validateConfig(cfg) {
     if (it.horizonOverride && !seenAss.has(it.horizonOverride)) {
       errors.push(`item ${it.id}: horizonOverride '${it.horizonOverride}' not found`);
     }
+
+    if (it.rampMonths != null) {
+      if (typeof it.rampMonths !== "number" || !Number.isFinite(it.rampMonths) || it.rampMonths < 0) {
+        errors.push(`item ${it.id}: rampMonths must be a non-negative number, got ${it.rampMonths}`);
+      } else if (it.lump && it.rampMonths > 0) {
+        warnings.push(`item ${it.id}: rampMonths is ignored on lump items (one-off events have no ramp)`);
+      } else if (it.rampMonths > HORIZON * 12) {
+        warnings.push(`item ${it.id}: rampMonths ${it.rampMonths} exceeds the case horizon (${HORIZON * 12} months) — the item never reaches full strength`);
+      }
+    }
   }
   if (items.length === 0) errors.push("no items defined");
   else {
@@ -226,29 +244,74 @@ const READ_ONLY = !!__CFG.__readOnly;
 // COMPUTE — gross → year array → PV. No risk-adjustment waterfall, no
 // cash/soft split: each item's value is what its `gross` formula produces.
 // =========================================================================
+
+// Fraction of full-strength value an item earns over an arbitrary window
+// [a, a + windowMonths) of the ramp curve. ramp(t) = min(t / R, 1).
+// Returns the AVERAGE ramp value over the window — used by the engine
+// to scale each period's gross value.
+function rampFraction(R, monthsSinceStart, windowMonths = 12) {
+  if (!R || R <= 0) return 1;
+  const a = monthsSinceStart;
+  const b = a + windowMonths;
+  if (a >= R) return 1;
+  if (b <= R) return (a + b) / 2 / R;
+  const partial = (R * R - a * a) / (2 * R);
+  const full    = b - R;
+  return (partial + full) / windowMonths;
+}
+
+// computeItemSeries — runs the formula and turns it into a cashflow
+// series at PERIOD resolution. The legacy `cash` array (yearly rollup,
+// length HORIZON) is preserved so existing UI that sums year-totals,
+// renders year-stacked bars, or sorts items by total absolute cash all
+// keep working unchanged. `cashPeriods` (length PERIODS) is the new
+// fine-grained series used by the cumulative cashflow chart and any
+// future period-aware view.
 function computeItemSeries(item, A) {
-  const r = (A.discount_rate || 0) / 100;
+  const rAnnual = (A.discount_rate || 0) / 100;
+  // Per-period discount factor — geometric so that (1 + rPeriod)^PPY = 1 + rAnnual.
+  const rPeriod = Math.pow(1 + rAnnual, 1 / PERIODS_PER_YEAR) - 1;
 
   const start = item.startYear || 1;
-  const yearArr = Array(HORIZON).fill(0);
+  const startPeriod = (start - 1) * PERIODS_PER_YEAR; // 0-indexed start period
+
+  const periodArr = Array(PERIODS).fill(0);
 
   const grossAnnual = item.gross(A);
+  const grossPerPeriod = grossAnnual / PERIODS_PER_YEAR;
+
   if (item.lump) {
-    if (start - 1 < HORIZON) yearArr[start - 1] = grossAnnual;
+    // Lump sums are one-off events at the start of startYear — placed at
+    // the first period of that year, no ramp.
+    if (startPeriod < PERIODS) periodArr[startPeriod] = grossAnnual;
   } else {
     let endYear = HORIZON;
     if (item.horizonOverride) {
       const yrs = A[item.horizonOverride] || HORIZON;
       endYear = Math.min(HORIZON, start - 1 + yrs);
     }
-    for (let y = start - 1; y < endYear; y++) yearArr[y] = grossAnnual;
+    const endPeriod = endYear * PERIODS_PER_YEAR;
+    const rampMonths = Number(item.rampMonths) || 0;
+    for (let p = startPeriod; p < endPeriod; p++) {
+      const monthsSinceStart = (p - startPeriod) * MONTHS_PER_PERIOD;
+      periodArr[p] = grossPerPeriod
+        * rampFraction(rampMonths, monthsSinceStart, MONTHS_PER_PERIOD);
+    }
   }
 
+  // PV across periods.
   let grossPV = 0;
-  for (let y = 0; y < HORIZON; y++) grossPV += yearArr[y] / Math.pow(1 + r, y);
+  for (let p = 0; p < PERIODS; p++) grossPV += periodArr[p] / Math.pow(1 + rPeriod, p);
+
+  // Roll period series up to yearly so the rest of the UI keeps working.
+  const yearArr = Array(HORIZON).fill(0);
+  for (let p = 0; p < PERIODS; p++) {
+    yearArr[Math.floor(p / PERIODS_PER_YEAR)] += periodArr[p];
+  }
 
   return {
-    cash: yearArr,
+    cash:        yearArr,    // yearly rollup, length HORIZON
+    cashPeriods: periodArr,  // period-resolution, length PERIODS
     grossAnnual,
     grossPV,
     cashPV: grossPV,
@@ -316,64 +379,87 @@ function computeIRR(items, A) {
 
 // Payback — the cash-tight-customer's first question.
 //
-// Works on *nominal* net cashflow (benefit − cost, no discounting) so the
-// chart and the number agree pixel-for-number with what the eye sees. The
-// existing computeModel().npv stays as the discounted summary; this one
-// answers "when do I get my money back?"
+// Works on *nominal* net cashflow (benefit − cost, no discounting) at
+// PERIOD resolution so the chart shows the ramp curve smoothly and the
+// payback point lands where the eye sees it cross zero. Yearly rollups
+// are kept for back-compat with any consumer that still reads .yearly /
+// .cumulative as length-HORIZON arrays.
 //
 // Returns:
-//   yearly       — net per year, length HORIZON, signed
-//   cumulative   — running sum of yearly, length HORIZON, signed
-//   trough       — { value, yearIdx } most-negative point on cumulative.
-//                  value ≤ 0; yearIdx is the 0-indexed year that ends at
-//                  the trough. When the case never goes negative, returns
-//                  { value: 0, yearIdx: 0 }.
-//   paybackYear  — continuous year-position where cumulative crosses 0
-//                  going from negative to non-negative AFTER the trough.
-//                  year-position 1.0 = end of year 1; 2.72 = 72% through
-//                  year 3. Null if cumulative never recovers to ≥ 0
-//                  within the horizon. Zero if cumulative is ≥ 0 from
-//                  the start (no upfront outlay → "immediately").
-//   endingValue  — cumulative[HORIZON - 1].
+//   yearly             — net per year, length HORIZON, signed (rollup)
+//   cumulative         — running sum of yearly, length HORIZON
+//   periodly           — net per period, length PERIODS, signed
+//   cumulativePeriods  — running sum of periodly, length PERIODS
+//   trough             — { value, yearIdx, periodIdx } most-negative point
+//                        on the period cumulative
+//   paybackYear        — continuous year-position where cumulative crosses
+//                        zero from below AFTER the trough. 1.0 = end of
+//                        year 1; 2.72 = 72% through year 3. Null if never
+//                        recovers; zero if positive from the start.
+//   paybackPeriod      — continuous period-position of the same crossing
+//   endingValue        — cumulative final value
 function computePayback(items, A) {
-  const yearly = Array(HORIZON).fill(0);
+  const periodly = Array(PERIODS).fill(0);
   for (const it of items) {
     const s = computeItemSeries(it, A);
     const sign = it.kind === "benefit" ? 1 : -1;
-    for (let y = 0; y < HORIZON; y++) yearly[y] += sign * s.cash[y];
+    for (let p = 0; p < PERIODS; p++) periodly[p] += sign * s.cashPeriods[p];
   }
-  const cumulative = [];
+  const cumulativePeriods = [];
   let acc = 0;
-  for (let y = 0; y < HORIZON; y++) { acc += yearly[y]; cumulative.push(acc); }
+  for (let p = 0; p < PERIODS; p++) { acc += periodly[p]; cumulativePeriods.push(acc); }
 
-  let troughVal = 0, troughIdx = 0;
-  for (let y = 0; y < HORIZON; y++) {
-    if (cumulative[y] < troughVal) { troughVal = cumulative[y]; troughIdx = y; }
+  let troughVal = 0, troughPeriodIdx = 0;
+  for (let p = 0; p < PERIODS; p++) {
+    if (cumulativePeriods[p] < troughVal) {
+      troughVal = cumulativePeriods[p];
+      troughPeriodIdx = p;
+    }
   }
+  const troughYearIdx = Math.floor(troughPeriodIdx / PERIODS_PER_YEAR);
 
-  let paybackYear = null;
+  let paybackPeriod = null;
   if (troughVal >= 0) {
-    paybackYear = 0;
+    paybackPeriod = 0;
   } else {
-    for (let y = troughIdx; y < HORIZON; y++) {
-      if (cumulative[y] >= 0) {
-        const prev = y > 0 ? cumulative[y - 1] : 0;
-        if (prev < 0 && yearly[y] > 0) {
-          paybackYear = y + (-prev) / yearly[y];
+    for (let p = troughPeriodIdx; p < PERIODS; p++) {
+      if (cumulativePeriods[p] >= 0) {
+        const prev = p > 0 ? cumulativePeriods[p - 1] : 0;
+        if (prev < 0 && periodly[p] > 0) {
+          paybackPeriod = p + (-prev) / periodly[p];
         } else {
-          paybackYear = y + 1;
+          paybackPeriod = p + 1;
         }
         break;
       }
     }
   }
+  const paybackYear = paybackPeriod == null ? null : paybackPeriod / PERIODS_PER_YEAR;
+
+  // Yearly rollups for back-compat with non-period-aware consumers.
+  const yearly = Array(HORIZON).fill(0);
+  for (let p = 0; p < PERIODS; p++) {
+    yearly[Math.floor(p / PERIODS_PER_YEAR)] += periodly[p];
+  }
+  const cumulative = [];
+  let yAcc = 0;
+  for (let y = 0; y < HORIZON; y++) { yAcc += yearly[y]; cumulative.push(yAcc); }
 
   return {
     yearly,
     cumulative,
+    periodly,
+    cumulativePeriods,
     paybackYear,
-    trough: { value: troughVal, yearIdx: troughIdx },
-    endingValue: cumulative[HORIZON - 1] || 0,
+    paybackPeriod,
+    trough: {
+      value: troughVal,
+      yearIdx:   troughYearIdx,
+      periodIdx: troughPeriodIdx,
+    },
+    endingValue: cumulativePeriods[PERIODS - 1] || 0,
+    periodsPerYear: PERIODS_PER_YEAR,
+    horizonYears:   HORIZON,
   };
 }
 
@@ -411,6 +497,29 @@ function computeSensitivity(items, A, baseAssumptions, optsOrDelta) {
 // =========================================================================
 // FORMAT HELPERS
 // =========================================================================
+
+// Period-unit naming. Driven by the case's periodsPerYear so headlines,
+// chart labels, and payback prose all read in the same cadence the
+// engine is computing on.
+//   1 → year      4 → quarter      12 → month      other → period
+function periodUnit(periodsPerYear) {
+  const ppy = Math.max(1, Math.round(periodsPerYear || 1));
+  if (ppy === 1)  return { one: "year",    many: "years",    short: "Y" };
+  if (ppy === 4)  return { one: "quarter", many: "quarters", short: "Q" };
+  if (ppy === 12) return { one: "month",   many: "months",   short: "M" };
+  if (ppy === 2)  return { one: "half",    many: "halves",   short: "H" };
+  return { one: "period", many: "periods", short: "P" };
+}
+// Pretty label for the timeline span — "3 years", "12 quarters", etc.
+// Uses periodsPerYear when >1 so quarter/month cases read in their
+// native cadence; falls back to years otherwise.
+function timelineLabel(horizonYears, periodsPerYear) {
+  const ppy = Math.max(1, Math.round(periodsPerYear || 1));
+  if (ppy === 1) return `${horizonYears} ${horizonYears === 1 ? "year" : "years"}`;
+  const n = horizonYears * ppy;
+  const u = periodUnit(ppy);
+  return `${n} ${n === 1 ? u.one : u.many}`;
+}
 // 1-2-2.5-5-10 ("nice number") rounding for human-readable headlines.
 // Snaps to {1, 2, 2.5, 5} × 10^k. Calculations stay in actuals — this is
 // only used to massage displayed figures.
@@ -446,7 +555,8 @@ const fmtMoneyExact = (v) => `${v < 0 ? "-" : ""}$${Math.round(Math.abs(v)).toLo
 const fmtPct = (v) => `${(v * 100).toFixed(1)}%`;
 
 Object.assign(window, {
-  HORIZON, YEARS,
+  HORIZON, YEARS, PERIODS_PER_YEAR, PERIODS, MONTHS_PER_PERIOD,
+  periodUnit, timelineLabel,
   DEFAULT_ASSUMPTIONS, DEFAULT_ITEMS, BASELINE,
   PROJECT_META, READ_ONLY,
   CONFIG_VALIDATION,
