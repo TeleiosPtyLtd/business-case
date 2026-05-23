@@ -39,6 +39,10 @@ window.PROJECT_CONFIG = {
       "vs. who captures the benefit, and what saying 'yes' actually unlocks.",
   },
 
+  // Time model. All flow assumptions below are expressed in the chosen
+  // granularity (here, per year). Pick `day` / `week` / `month` /
+  // `quarter` / `year` to match how the buyer thinks about the decision.
+  granularity: "year",
   horizon: 3,
 
   // Implied current-state expressions, rendered under NOW once the buyer has
@@ -112,14 +116,6 @@ window.PROJECT_CONFIG = {
       description: "Recurring spend each year to keep the intervention live — licensing, support, hosting, maintenance.",
       sensitivityRange: { lo: 0.7, hi: 1.5 } },
 
-    // ---- Financial ----------------------------------------------------------
-    { id: "discount_rate", label: "Discount rate",
-      value: 0, unit: "%", step: 0.5, group: "Financial", icon: "IconPercent",
-      source: "Default 0% — set above zero to bring future cashflows to present.",
-      description: "Annual discount rate for the present-value calculation. " +
-                   "Start at 0% if you want the buyer to read undiscounted; " +
-                   "adjust to match the buyer's cost of capital if it matters.",
-      sensitivityRange: { lo: 0.75, hi: 1.5 } },
   ],
 
   // ---------------------------------------------------------------------------
@@ -143,13 +139,13 @@ window.PROJECT_CONFIG = {
     // value-chain descriptions with your specifics; the assumption values
     // above carry the actual dollars.
     { id: "cost_setup", name: "Replace with one-off setup spend", kind: "cost",
-      lump: true, startYear: 1,
+      lump: true, startPeriod: 1,
       gross: "implementation_cost",
       desc: "Replace with the 1–2 sentence value chain: what the upfront spend buys (kit, integration, training) and when it lands.",
       uses: ["implementation_cost"] },
 
     { id: "cost_running", name: "Replace with each year's running cost", kind: "cost",
-      lump: false, startYear: 1,
+      lump: false, startPeriod: 1,
       gross: "annual_running_cost",
       desc: "Replace with the 1–2 sentence value chain: what each year's ongoing spend covers (licensing, support, hosting, maintenance).",
       uses: ["annual_running_cost"] },
@@ -157,7 +153,7 @@ window.PROJECT_CONFIG = {
     // Benefits
     { id: "benefit_primary", name: "Replace with what the buyer gains",
       kind: "benefit", scope: 1, benefitKind: "revenue_uplift",
-      lump: false, startYear: 1,
+      lump: false, startPeriod: 1,
       gross: "annual_customers * average_order_value * (commitment_assumption_id / 100)",
       desc: "Replace with the value chain: project action → world change → $ → who captures.",
       uses: ["annual_customers", "average_order_value", "commitment_assumption_id"] },

@@ -7,7 +7,7 @@ const IconMap = {
 
 const EstimatesRail = ({ assumptions: assumptionsAll, setAssumption, items, highlightedIds, hoveredIds, selectedItemLabel, selectedItemColor, hoveredItemColor, onClearSelection, onEditAssumption, readOnly, sortBySensitivity, onToggleSort, visibleAssumptionIds }) => {
   // Optional progressive-disclosure filter — only show assumptions used by
-  // currently-visible items. discount_rate is always passed through.
+  // currently-visible items.
   const assumptions = React.useMemo(() => {
     if (!visibleAssumptionIds || !(visibleAssumptionIds instanceof Set)) return assumptionsAll;
     return assumptionsAll.filter(a => visibleAssumptionIds.has(a.id));

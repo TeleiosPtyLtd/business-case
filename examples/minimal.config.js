@@ -8,17 +8,19 @@ window.PROJECT_CONFIG = {
     description:
       "We're considering rolling out a CRM to our 4-person sales team. The " +
       "counterfactual is the current spreadsheet-based process. Audience is " +
-      "the founder. Horizon is 3 years because the CRM subscription is annual " +
-      "and we want to see year-2 and year-3 effects after onboarding completes.",
+      "the founder. Modelled monthly over 18 months — covers the onboarding " +
+      "ramp and the year of steady-state value the subscription buys.",
   },
 
-  horizon: 3,
+  // Time model — every flow assumption below is expressed PER MONTH.
+  granularity: "month",
+  horizon: 18,
 
   baseline: [
     {
-      label: "Your annual revenue today",
-      formula: "deals_per_year * average_deal_value",
-      unit: "$/yr",
+      label: "Your monthly revenue today",
+      formula: "deals_per_period * average_deal_value",
+      unit: "$/mo",
       kind: "revenue",
     },
   ],
@@ -33,10 +35,10 @@ window.PROJECT_CONFIG = {
 
   assumptions: [
     // World facts (the buyer confirms these in NOW)
-    { id: "deals_per_year", label: "Deals closed per year",
-      value: 60, unit: "/yr", step: 5, group: "Sales shape", icon: "IconBuilding",
-      source: "FY24 sales log.",
-      description: "Number of deals your team closes in a year.",
+    { id: "deals_per_period", label: "Deals closed per month",
+      value: 5, unit: "/mo", step: 0.5, group: "Sales shape", icon: "IconBuilding",
+      source: "FY24 sales log — 60 deals/yr divided by 12.",
+      description: "Typical number of deals your team closes in a month.",
       sensitivityRange: { lo: 0.7, hi: 1.5 } },
 
     { id: "average_deal_value", label: "Average deal size",
@@ -49,35 +51,28 @@ window.PROJECT_CONFIG = {
     { id: "win_rate_lift_pp", label: "Win-rate increase",
       value: 4, unit: "pp", step: 0.5, group: "Sales lift", icon: "IconTrend",
       controllable: true,
-      source: "Vendor case studies (3-6 pp typical in year 1).",
+      source: "Vendor case studies (3-6 pp typical once team is bedded in).",
       description: "Extra win rate from better follow-up and pipeline discipline. " +
-                   "Vendor case studies show 3–6 pp in year 1; 4 is the conservative midpoint.",
+                   "Vendor case studies show 3–6 pp; 4 is the conservative midpoint.",
       sensitivityRange: { lo: 0.5, hi: 1.5 } },
-
-    // Financial
-    { id: "discount_rate", label: "Discount rate",
-      value: 0, unit: "%", step: 0.5, group: "Financial", icon: "IconPercent",
-      source: "Default 0% — undiscounted by design.",
-      description: "Annual discount rate for present value. Start at 0% if you " +
-                   "want the result to read undiscounted.",
-      sensitivityRange: { lo: 0.75, hi: 1.5 } },
   ],
 
   items: [
-    // Cost
-    { id: "cost_crm_subscription", name: "Annual CRM subscription", kind: "cost",
-      lump: false, startYear: 1,
-      gross: "4 * 50 * 12",
+    // Cost — recurring monthly subscription, kicks in immediately.
+    { id: "cost_crm_subscription", name: "Monthly CRM subscription", kind: "cost",
+      lump: false, startPeriod: 1,
+      gross: "4 * 50",
       desc: "Recurring CRM seat licence at $50/user/month for the 4-person sales team.",
       uses: [] },
 
-    // Benefit
+    // Benefit — deferred 3 months while the team learns the tool.
     { id: "benefit_winrate_lift", name: "Winning more deals",
       kind: "benefit", scope: 1, benefitKind: "revenue_uplift",
-      lump: false, startYear: 1,
-      gross: "deals_per_year * average_deal_value * (win_rate_lift_pp / 100)",
+      lump: false, startPeriod: 4,
+      gross: "deals_per_period * average_deal_value * (win_rate_lift_pp / 100)",
       desc: "Better follow-up and disciplined pipeline let the team close deals " +
-            "they would have lost to delay or forgotten follow-ups.",
-      uses: ["deals_per_year", "average_deal_value", "win_rate_lift_pp"] },
+            "they would have lost to delay or forgotten follow-ups. Deferred " +
+            "three months to let the team learn the tool.",
+      uses: ["deals_per_period", "average_deal_value", "win_rate_lift_pp"] },
   ],
 };

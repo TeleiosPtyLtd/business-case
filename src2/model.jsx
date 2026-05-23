@@ -1,22 +1,19 @@
 // =============================================================================
 // MODEL ENGINE — generic, project-agnostic.
 // All project-specific data lives in project.config.js (PROJECT_CONFIG).
-// This file compiles formulas, runs the waterfall + PV math, and validates
-// the config.
+// This file compiles formulas, runs the math, and validates the config.
+//
+// Time model. The case has a `granularity` (day/week/month/quarter/year) and
+// an integer `horizon` count of those periods. Every cashflow, every formula,
+// every assumption is expressed in that unit — there's no annualisation step
+// and no discounting. The headline is net cumulative ($) over the horizon
+// plus the payback period (first time cumulative net crosses zero).
 // =============================================================================
 
 const __CFG = window.PROJECT_CONFIG || {};
 
-const HORIZON = __CFG.horizon || 7;
-const YEARS   = HORIZON;
-
-// Sub-yearly time resolution. periodsPerYear=1 is the legacy yearly engine.
-// Set to 4 for quarters, 12 for months. The headline display (year-X totals,
-// And/Then breakdowns) keeps rolling up to YEARS — only the cumulative
-// cashflow chart and the ramp interpolation actually use period resolution.
-const PERIODS_PER_YEAR = Math.max(1, Math.round(Number(__CFG.periodsPerYear) || 1));
-const PERIODS          = HORIZON * PERIODS_PER_YEAR;
-const MONTHS_PER_PERIOD = 12 / PERIODS_PER_YEAR;
+const GRANULARITY = String(__CFG.granularity || "year").toLowerCase();
+const HORIZON     = Math.max(1, Math.round(Number(__CFG.horizon) || 1));
 
 // =========================================================================
 // FORMULA COMPILER (sandboxed)
@@ -145,24 +142,34 @@ function validateConfig(cfg) {
       errors.push(`item ${it.id}: kind must be 'cost' or 'benefit'`);
     } else if (it.kind === "cost") nCost++; else nBenefit++;
 
-    if (it.startYear != null && (it.startYear < 1 || it.startYear > HORIZON)) {
-      warnings.push(`item ${it.id}: startYear ${it.startYear} is outside 1..${HORIZON}`);
+    // Accept either the new `startPeriod` (1-indexed in the case's granularity)
+    // or the legacy `startYear` (1-indexed years). When a snapshot from before
+    // Wave 4 is loaded with granularity="year", they're equivalent. Anything
+    // else falls back to period 1.
+    const startP = Number(it.startPeriod ?? it.startYear ?? 1);
+    if (!Number.isFinite(startP) || startP < 1) {
+      errors.push(`item ${it.id}: startPeriod must be a positive integer, got ${it.startPeriod ?? it.startYear}`);
+    } else if (startP > HORIZON) {
+      warnings.push(`item ${it.id}: startPeriod ${startP} is past the horizon (${HORIZON}) — item never fires`);
+    }
+    if (it.endPeriod != null) {
+      const endP = Number(it.endPeriod);
+      if (!Number.isFinite(endP) || endP < startP) {
+        errors.push(`item ${it.id}: endPeriod must be >= startPeriod`);
+      } else if (endP > HORIZON) {
+        warnings.push(`item ${it.id}: endPeriod ${endP} exceeds horizon ${HORIZON} — will be clamped`);
+      }
     }
     const fErr = validateFormula(it.gross, ids);
     if (fErr) errors.push(`item ${it.id}: formula — ${fErr}`);
 
-    if (it.horizonOverride && !seenAss.has(it.horizonOverride)) {
-      errors.push(`item ${it.id}: horizonOverride '${it.horizonOverride}' not found`);
-    }
-
+    // Pre-Wave-4 fields that no longer mean anything — warn loudly so the
+    // author migrates the snapshot.
     if (it.rampMonths != null) {
-      if (typeof it.rampMonths !== "number" || !Number.isFinite(it.rampMonths) || it.rampMonths < 0) {
-        errors.push(`item ${it.id}: rampMonths must be a non-negative number, got ${it.rampMonths}`);
-      } else if (it.lump && it.rampMonths > 0) {
-        warnings.push(`item ${it.id}: rampMonths is ignored on lump items (one-off events have no ramp)`);
-      } else if (it.rampMonths > HORIZON * 12) {
-        warnings.push(`item ${it.id}: rampMonths ${it.rampMonths} exceeds the case horizon (${HORIZON * 12} months) — the item never reaches full strength`);
-      }
+      warnings.push(`item ${it.id}: rampMonths is no longer supported — use startPeriod to defer the item instead`);
+    }
+    if (it.horizonOverride != null) {
+      warnings.push(`item ${it.id}: horizonOverride is no longer supported — use endPeriod (1-indexed period) instead`);
     }
   }
   if (items.length === 0) errors.push("no items defined");
@@ -241,190 +248,93 @@ const PROJECT_META = __CFG.meta || {};
 const READ_ONLY = !!__CFG.__readOnly;
 
 // =========================================================================
-// COMPUTE — gross → year array → PV. No risk-adjustment waterfall, no
-// cash/soft split: each item's value is what its `gross` formula produces.
+// COMPUTE — nominal cashflows in the case's granularity. No discounting,
+// no NPV/IRR, no risk waterfall, no cash/soft split. Each item's value
+// is what its `gross` formula produces per-period; lumps fire once at
+// startPeriod, recurrings run startPeriod..endPeriod (or horizon).
 // =========================================================================
 
-// Fraction of full-strength value an item earns over an arbitrary window
-// [a, a + windowMonths) of the ramp curve. ramp(t) = min(t / R, 1).
-// Returns the AVERAGE ramp value over the window — used by the engine
-// to scale each period's gross value.
-function rampFraction(R, monthsSinceStart, windowMonths = 12) {
-  if (!R || R <= 0) return 1;
-  const a = monthsSinceStart;
-  const b = a + windowMonths;
-  if (a >= R) return 1;
-  if (b <= R) return (a + b) / 2 / R;
-  const partial = (R * R - a * a) / (2 * R);
-  const full    = b - R;
-  return (partial + full) / windowMonths;
-}
-
-// computeItemSeries — runs the formula and turns it into a cashflow
-// series at PERIOD resolution. The legacy `cash` array (yearly rollup,
-// length HORIZON) is preserved so existing UI that sums year-totals,
-// renders year-stacked bars, or sorts items by total absolute cash all
-// keep working unchanged. `cashPeriods` (length PERIODS) is the new
-// fine-grained series used by the cumulative cashflow chart and any
-// future period-aware view.
+// computeItemSeries — runs the per-period gross formula and lays it
+// across the horizon. Returns:
+//   series  — length HORIZON, signed by-kind by the caller
+//   total   — sum of series (helper)
+//   gross   — the raw per-period value from the formula (for popovers/audit)
 function computeItemSeries(item, A) {
-  const rAnnual = (A.discount_rate || 0) / 100;
-  // Per-period discount factor — geometric so that (1 + rPeriod)^PPY = 1 + rAnnual.
-  const rPeriod = Math.pow(1 + rAnnual, 1 / PERIODS_PER_YEAR) - 1;
-
-  const start = item.startYear || 1;
-  const startPeriod = (start - 1) * PERIODS_PER_YEAR; // 0-indexed start period
-
-  const periodArr = Array(PERIODS).fill(0);
-
-  const grossAnnual = item.gross(A);
-  const grossPerPeriod = grossAnnual / PERIODS_PER_YEAR;
+  const series = Array(HORIZON).fill(0);
+  const startP = Math.max(1, Math.round(Number(item.startPeriod ?? item.startYear ?? 1)));
+  const endRaw = Number(item.endPeriod);
+  const endP   = Math.min(HORIZON, Number.isFinite(endRaw) ? Math.max(startP, endRaw) : HORIZON);
+  const gross  = Number(item.gross(A)) || 0;
 
   if (item.lump) {
-    // Lump sums are one-off events at the start of startYear — placed at
-    // the first period of that year, no ramp.
-    if (startPeriod < PERIODS) periodArr[startPeriod] = grossAnnual;
+    if (startP >= 1 && startP <= HORIZON) series[startP - 1] = gross;
   } else {
-    let endYear = HORIZON;
-    if (item.horizonOverride) {
-      const yrs = A[item.horizonOverride] || HORIZON;
-      endYear = Math.min(HORIZON, start - 1 + yrs);
-    }
-    const endPeriod = endYear * PERIODS_PER_YEAR;
-    const rampMonths = Number(item.rampMonths) || 0;
-    for (let p = startPeriod; p < endPeriod; p++) {
-      const monthsSinceStart = (p - startPeriod) * MONTHS_PER_PERIOD;
-      periodArr[p] = grossPerPeriod
-        * rampFraction(rampMonths, monthsSinceStart, MONTHS_PER_PERIOD);
-    }
+    for (let p = startP - 1; p < endP; p++) series[p] = gross;
   }
 
-  // PV across periods.
-  let grossPV = 0;
-  for (let p = 0; p < PERIODS; p++) grossPV += periodArr[p] / Math.pow(1 + rPeriod, p);
+  let total = 0;
+  for (let p = 0; p < HORIZON; p++) total += series[p];
 
-  // Roll period series up to yearly so the rest of the UI keeps working.
-  const yearArr = Array(HORIZON).fill(0);
-  for (let p = 0; p < PERIODS; p++) {
-    yearArr[Math.floor(p / PERIODS_PER_YEAR)] += periodArr[p];
-  }
-
-  return {
-    cash:        yearArr,    // yearly rollup, length HORIZON
-    cashPeriods: periodArr,  // period-resolution, length PERIODS
-    grossAnnual,
-    grossPV,
-    cashPV: grossPV,
-  };
+  return { series, total, gross };
 }
 
 function computeModel(items, A) {
   const perItem = {};
-  const yearTotals = { cost: Array(HORIZON).fill(0), benefit: Array(HORIZON).fill(0) };
-  let totalCostsPV = 0, totalBenefitsPV = 0;
+  const periodTotals = { cost: Array(HORIZON).fill(0), benefit: Array(HORIZON).fill(0) };
+  let totalCosts = 0, totalBenefits = 0;
 
   for (const it of items) {
-    const series = computeItemSeries(it, A);
-    perItem[it.id] = series;
-
-    for (let y = 0; y < HORIZON; y++) {
-      if (it.kind === "cost") yearTotals.cost[y] += series.cash[y];
-      else yearTotals.benefit[y] += series.cash[y];
+    const s = computeItemSeries(it, A);
+    perItem[it.id] = s;
+    for (let p = 0; p < HORIZON; p++) {
+      if (it.kind === "cost") periodTotals.cost[p]    += s.series[p];
+      else                    periodTotals.benefit[p] += s.series[p];
     }
-
-    if (it.kind === "cost") totalCostsPV += series.cashPV;
-    else totalBenefitsPV += series.cashPV;
+    if (it.kind === "cost") totalCosts    += s.total;
+    else                    totalBenefits += s.total;
   }
 
-  const npv = totalBenefitsPV - totalCostsPV;
-  const bcr = totalCostsPV > 0 ? totalBenefitsPV / totalCostsPV : 0;
-
+  const net = totalBenefits - totalCosts;
   return {
-    perItem, yearTotals, npv, bcr,
-    totalCostsPV, totalBenefitsPV,
+    perItem, periodTotals,
+    totalCosts, totalBenefits, net,
   };
 }
 
-// IRR via bisection. Multi-sign-change cash flows have non-unique IRR,
-// so we refuse rather than silently pick one root.
-function computeIRR(items, A) {
-  const net = Array(HORIZON).fill(0);
-  for (const it of items) {
-    const s = computeItemSeries(it, A);
-    for (let y = 0; y < HORIZON; y++) {
-      net[y] += (it.kind === "benefit" ? 1 : -1) * s.cash[y];
-    }
-  }
-  let signFlips = 0, prev = 0;
-  for (const v of net) {
-    if (v === 0) continue;
-    const cur = v > 0 ? 1 : -1;
-    if (prev !== 0 && cur !== prev) signFlips++;
-    prev = cur;
-  }
-  if (signFlips > 1) return null;
-
-  const npvAt = (rate) => net.reduce((s, c, y) => s + c / Math.pow(1 + rate, y), 0);
-  let lo = -0.95, hi = 10.0;
-  if (!Number.isFinite(npvAt(lo)) || !Number.isFinite(npvAt(hi))) return null;
-  if (npvAt(lo) * npvAt(hi) > 0) return null;
-  for (let i = 0; i < 100; i++) {
-    const mid = (lo + hi) / 2;
-    const v = npvAt(mid);
-    if (Math.abs(v) < 1) return mid;
-    if (npvAt(lo) * v < 0) hi = mid; else lo = mid;
-  }
-  return (lo + hi) / 2;
-}
-
 // Payback — the cash-tight-customer's first question.
-//
-// Works on *nominal* net cashflow (benefit − cost, no discounting) at
-// PERIOD resolution so the chart shows the ramp curve smoothly and the
-// payback point lands where the eye sees it cross zero. Yearly rollups
-// are kept for back-compat with any consumer that still reads .yearly /
-// .cumulative as length-HORIZON arrays.
-//
+// Works on nominal net cashflow (benefit − cost) period-by-period.
 // Returns:
-//   yearly             — net per year, length HORIZON, signed (rollup)
-//   cumulative         — running sum of yearly, length HORIZON
-//   periodly           — net per period, length PERIODS, signed
-//   cumulativePeriods  — running sum of periodly, length PERIODS
-//   trough             — { value, yearIdx, periodIdx } most-negative point
-//                        on the period cumulative
-//   paybackYear        — continuous year-position where cumulative crosses
-//                        zero from below AFTER the trough. 1.0 = end of
-//                        year 1; 2.72 = 72% through year 3. Null if never
-//                        recovers; zero if positive from the start.
-//   paybackPeriod      — continuous period-position of the same crossing
-//   endingValue        — cumulative final value
+//   periodly         — net per period, length HORIZON, signed
+//   cumulative       — running sum of periodly, length HORIZON
+//   trough           — { value, periodIdx } most-negative cumulative point
+//   paybackPeriod    — continuous period position where cumulative first
+//                      crosses zero from below AFTER the trough.
+//                      1.0 = end of period 1; 2.72 = 72% through period 3.
+//                      Null if it never recovers; 0 if positive from start.
+//   endingValue      — cumulative at horizon (== net)
 function computePayback(items, A) {
-  const periodly = Array(PERIODS).fill(0);
+  const periodly = Array(HORIZON).fill(0);
   for (const it of items) {
     const s = computeItemSeries(it, A);
     const sign = it.kind === "benefit" ? 1 : -1;
-    for (let p = 0; p < PERIODS; p++) periodly[p] += sign * s.cashPeriods[p];
+    for (let p = 0; p < HORIZON; p++) periodly[p] += sign * s.series[p];
   }
-  const cumulativePeriods = [];
+  const cumulative = [];
   let acc = 0;
-  for (let p = 0; p < PERIODS; p++) { acc += periodly[p]; cumulativePeriods.push(acc); }
+  for (let p = 0; p < HORIZON; p++) { acc += periodly[p]; cumulative.push(acc); }
 
-  let troughVal = 0, troughPeriodIdx = 0;
-  for (let p = 0; p < PERIODS; p++) {
-    if (cumulativePeriods[p] < troughVal) {
-      troughVal = cumulativePeriods[p];
-      troughPeriodIdx = p;
-    }
+  let troughVal = 0, troughIdx = 0;
+  for (let p = 0; p < HORIZON; p++) {
+    if (cumulative[p] < troughVal) { troughVal = cumulative[p]; troughIdx = p; }
   }
-  const troughYearIdx = Math.floor(troughPeriodIdx / PERIODS_PER_YEAR);
 
   let paybackPeriod = null;
   if (troughVal >= 0) {
     paybackPeriod = 0;
   } else {
-    for (let p = troughPeriodIdx; p < PERIODS; p++) {
-      if (cumulativePeriods[p] >= 0) {
-        const prev = p > 0 ? cumulativePeriods[p - 1] : 0;
+    for (let p = troughIdx; p < HORIZON; p++) {
+      if (cumulative[p] >= 0) {
+        const prev = p > 0 ? cumulative[p - 1] : 0;
         if (prev < 0 && periodly[p] > 0) {
           paybackPeriod = p + (-prev) / periodly[p];
         } else {
@@ -434,45 +344,27 @@ function computePayback(items, A) {
       }
     }
   }
-  const paybackYear = paybackPeriod == null ? null : paybackPeriod / PERIODS_PER_YEAR;
-
-  // Yearly rollups for back-compat with non-period-aware consumers.
-  const yearly = Array(HORIZON).fill(0);
-  for (let p = 0; p < PERIODS; p++) {
-    yearly[Math.floor(p / PERIODS_PER_YEAR)] += periodly[p];
-  }
-  const cumulative = [];
-  let yAcc = 0;
-  for (let y = 0; y < HORIZON; y++) { yAcc += yearly[y]; cumulative.push(yAcc); }
 
   return {
-    yearly,
-    cumulative,
     periodly,
-    cumulativePeriods,
-    paybackYear,
+    cumulative,
     paybackPeriod,
-    trough: {
-      value: troughVal,
-      yearIdx:   troughYearIdx,
-      periodIdx: troughPeriodIdx,
-    },
-    endingValue: cumulativePeriods[PERIODS - 1] || 0,
-    periodsPerYear: PERIODS_PER_YEAR,
-    horizonYears:   HORIZON,
+    trough: { value: troughVal, periodIdx: troughIdx },
+    endingValue: cumulative[HORIZON - 1] || 0,
+    granularity: GRANULARITY,
+    horizon: HORIZON,
   };
 }
 
 // Sensitivity: per-assumption ±25% by default; respect optional
 // sensitivityRange = { lo, hi } where lo/hi are multipliers on the base value.
-// Fourth arg accepts either a number (legacy: defaultDelta) or an options
-// object { defaultDelta }.
+// Anchors on net cumulative (totalBenefits − totalCosts).
 function computeSensitivity(items, A, baseAssumptions, optsOrDelta) {
   const opts = typeof optsOrDelta === "number"
     ? { defaultDelta: optsOrDelta }
     : (optsOrDelta || {});
   const defaultDelta = opts.defaultDelta != null ? opts.defaultDelta : 0.25;
-  const baseNPV = computeModel(items, A).npv;
+  const baseNet = computeModel(items, A).net;
   const out = [];
   for (const a of baseAssumptions) {
     if (typeof a.value !== "number") continue;
@@ -481,12 +373,12 @@ function computeSensitivity(items, A, baseAssumptions, optsOrDelta) {
     const hiMul = r && Number.isFinite(r.hi) ? r.hi : 1 + defaultDelta;
     const lo = { ...A, [a.id]: a.value * loMul };
     const hi = { ...A, [a.id]: a.value * hiMul };
-    const npvLo = computeModel(items, lo).npv;
-    const npvHi = computeModel(items, hi).npv;
+    const netLo = computeModel(items, lo).net;
+    const netHi = computeModel(items, hi).net;
     out.push({
       id: a.id, label: a.label,
-      base: baseNPV, lo: npvLo, hi: npvHi,
-      range: Math.abs(npvHi - npvLo),
+      base: baseNet, lo: netLo, hi: netHi,
+      range: Math.abs(netHi - netLo),
       loMul, hiMul,
     });
   }
@@ -498,27 +390,23 @@ function computeSensitivity(items, A, baseAssumptions, optsOrDelta) {
 // FORMAT HELPERS
 // =========================================================================
 
-// Period-unit naming. Driven by the case's periodsPerYear so headlines,
-// chart labels, and payback prose all read in the same cadence the
-// engine is computing on.
-//   1 → year      4 → quarter      12 → month      other → period
-function periodUnit(periodsPerYear) {
-  const ppy = Math.max(1, Math.round(periodsPerYear || 1));
-  if (ppy === 1)  return { one: "year",    many: "years",    short: "Y" };
-  if (ppy === 4)  return { one: "quarter", many: "quarters", short: "Q" };
-  if (ppy === 12) return { one: "month",   many: "months",   short: "M" };
-  if (ppy === 2)  return { one: "half",    many: "halves",   short: "H" };
-  return { one: "period", many: "periods", short: "P" };
+// Period-unit naming. Driven by the case's granularity so headlines,
+// chart labels, and payback prose all read in the unit the buyer chose.
+const __GRAN_LABELS = {
+  day:     { one: "day",     many: "days",     short: "D" },
+  week:    { one: "week",    many: "weeks",    short: "W" },
+  month:   { one: "month",   many: "months",   short: "M" },
+  quarter: { one: "quarter", many: "quarters", short: "Q" },
+  year:    { one: "year",    many: "years",    short: "Y" },
+};
+function periodUnit(granularity) {
+  return __GRAN_LABELS[String(granularity || "").toLowerCase()]
+    || { one: "period", many: "periods", short: "P" };
 }
-// Pretty label for the timeline span — "3 years", "12 quarters", etc.
-// Uses periodsPerYear when >1 so quarter/month cases read in their
-// native cadence; falls back to years otherwise.
-function timelineLabel(horizonYears, periodsPerYear) {
-  const ppy = Math.max(1, Math.round(periodsPerYear || 1));
-  if (ppy === 1) return `${horizonYears} ${horizonYears === 1 ? "year" : "years"}`;
-  const n = horizonYears * ppy;
-  const u = periodUnit(ppy);
-  return `${n} ${n === 1 ? u.one : u.many}`;
+// Pretty label for the timeline span — "18 months", "12 quarters", etc.
+function timelineLabel(horizon, granularity) {
+  const u = periodUnit(granularity);
+  return `${horizon} ${horizon === 1 ? u.one : u.many}`;
 }
 // 1-2-2.5-5-10 ("nice number") rounding for human-readable headlines.
 // Snaps to {1, 2, 2.5, 5} × 10^k. Calculations stay in actuals — this is
@@ -555,12 +443,12 @@ const fmtMoneyExact = (v) => `${v < 0 ? "-" : ""}$${Math.round(Math.abs(v)).toLo
 const fmtPct = (v) => `${(v * 100).toFixed(1)}%`;
 
 Object.assign(window, {
-  HORIZON, YEARS, PERIODS_PER_YEAR, PERIODS, MONTHS_PER_PERIOD,
+  GRANULARITY, HORIZON,
   periodUnit, timelineLabel,
   DEFAULT_ASSUMPTIONS, DEFAULT_ITEMS, BASELINE,
   PROJECT_META, READ_ONLY,
   CONFIG_VALIDATION,
-  computeModel, computeItemSeries, computeIRR, computePayback,
+  computeModel, computeItemSeries, computePayback,
   computeSensitivity, splitMultiplicativeFactors,
   validateFormula, validateConfig, extractAssumptionIds, compileFormula,
   fmtMoney, fmtMoneyExact, fmtPct, niceRound,

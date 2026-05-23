@@ -293,26 +293,19 @@ const HoverStackedBars = ({
 // above the chart has just named — red trough (max out-of-pocket), ink
 // payback crossing, green endpoint.
 //
-// The chart renders at whatever resolution is passed in. When
-// `periodsPerYear > 1`, `cumulative` carries `horizon × periodsPerYear`
-// values and the line shows ramp curves smoothly between year tick
-// marks. Year labels still anchor the x-axis — buyers reason in years,
-// not quarters.
+// The chart renders one sample per period in the case's granularity.
 //
 // Props:
-//   yearly         — (back-compat) net per year, length horizon, signed
-//   cumulative     — running sum at the chart's resolution.
-//                    Length === horizon × periodsPerYear.
-//   paybackYear    — continuous year-position of zero-crossing
-//   trough         — { value, yearIdx, periodIdx? } most-negative point
+//   periodly       — net per period, length horizon, signed
+//   cumulative     — running sum, length horizon
+//   paybackPeriod  — continuous 1-indexed period position of zero-crossing
+//   trough         — { value, periodIdx } most-negative cumulative point
 //   endingValue    — cumulative final value
-//   horizon        — number of years (still the x-axis unit for labels)
-//   periodsPerYear — optional, default 1. When > 1 the chart treats
-//                    cumulative as period-resolution and only places
-//                    year ticks at full-year boundaries.
+//   horizon        — count of periods on the x-axis
+//   granularity    — "day" | "week" | "month" | "quarter" | "year"
 const CumulativeCashflow = ({
-  yearly, cumulative, paybackYear, trough, endingValue, horizon,
-  periodsPerYear = 1,
+  periodly, cumulative, paybackPeriod, trough, endingValue, horizon,
+  granularity = "year",
   height = 220,
 }) => {
   const wrapRef = React.useRef(null);
@@ -337,11 +330,12 @@ const CumulativeCashflow = ({
 
   if (!cumulative || cumulative.length === 0) return null;
 
-  const ppy = Math.max(1, Math.round(periodsPerYear || 1));
-  // Total samples on the line — periods if sub-yearly, otherwise years.
+  // One sample per period; horizon = period count.
   const N = cumulative.length;
-  // Year count on the x-axis. Falls back to N/ppy when horizon is absent.
-  const yearCount = Math.max(1, horizon || Math.round(N / ppy));
+  const u = (typeof window !== "undefined" && window.periodUnit)
+    ? window.periodUnit(granularity)
+    : { one: "period", many: "periods", short: "P" };
+  const isYearly = granularity === "year";
 
   const padL = 12, padR = 12, padT = 16, padB = 30;
   const innerW = width - padL - padR;
@@ -357,12 +351,11 @@ const CumulativeCashflow = ({
   const span = (yMax - yMin) || 1;
 
   // X coordinate helpers. xForSample maps the i-th cumulative sample
-  // (period or year) onto the inner width. xForYearPos maps a continuous
-  // year-position (0..yearCount) onto the same inner width — used for
-  // year-boundary ticks and the paybackYear marker.
-  const xForSample  = (i)  => padL + (i / N) * innerW;
-  const xForYearPos = (yp) => padL + (yp / yearCount) * innerW;
-  const yFor        = (v)  => padT + ((yMax - v) / span) * innerH;
+  // onto the inner width. xForPeriodPos maps a continuous period position
+  // (0..N) — used for the payback marker.
+  const xForSample      = (i)  => padL + (i / N) * innerW;
+  const xForPeriodPos   = (pp) => padL + (pp / N) * innerW;
+  const yFor            = (v)  => padT + ((yMax - v) / span) * innerH;
   const zeroY = yFor(0);
 
   // Line points — starts at (0, 0), then each cumulative[i] at the end
@@ -386,18 +379,14 @@ const CumulativeCashflow = ({
   );
 
   const showTrough = trough && trough.value < 0;
-  const showCrossing = paybackYear != null && paybackYear > 0
-    && paybackYear <= yearCount && showTrough;
+  const showCrossing = paybackPeriod != null && paybackPeriod > 0
+    && paybackPeriod <= N && showTrough;
   const showEndpoint = endingValue !== 0 || cumulative.some(v => v !== 0);
 
-  // Trough x — prefer period-resolution position when the chart is
-  // running sub-yearly, fall back to year-level position otherwise.
-  const troughSampleIdx = trough && (trough.periodIdx != null
-    ? trough.periodIdx
-    : trough.yearIdx);
+  const troughSampleIdx = trough && (trough.periodIdx != null ? trough.periodIdx : 0);
   const troughX = showTrough ? xForSample(troughSampleIdx + 1) : 0;
   const troughY = showTrough ? yFor(trough.value) : 0;
-  const crossX  = showCrossing ? xForYearPos(paybackYear) : 0;
+  const crossX  = showCrossing ? xForPeriodPos(paybackPeriod) : 0;
   const endX    = xForSample(N);
   const endY    = yFor(endingValue);
 
@@ -428,21 +417,15 @@ const CumulativeCashflow = ({
               stroke="var(--ink-2)" strokeWidth="1.25"
               shapeRendering="crispEdges" />
 
-        {/* Period tick lines — short, dashed, hairline at each period
-            boundary. When the chart runs sub-yearly we tick at every
-            period (Q1|Q2, Q2|Q3, ...) and emphasise year boundaries
-            with a slightly stronger stroke so the eye can still pick
-            out year spans without reading the labels. */}
+        {/* Period tick lines — short, dashed, hairline at each boundary. */}
         {Array.from({ length: N - 1 }).map((_, i) => {
           const x = xForSample(i + 1);
-          const periodIdx = i + 1; // 1-indexed boundary
-          const isYearBoundary = ppy > 1 && (periodIdx % ppy === 0);
           return (
             <line key={`tick-${i}`} x1={x} x2={x}
                   y1={padT} y2={padT + innerH}
-                  stroke={isYearBoundary ? "var(--line-strong)" : "var(--line)"}
+                  stroke="var(--line)"
                   strokeWidth="1"
-                  strokeDasharray={isYearBoundary ? "2 3" : "1 4"}
+                  strokeDasharray="1 4"
                   shapeRendering="crispEdges" />
           );
         })}
@@ -491,23 +474,17 @@ const CumulativeCashflow = ({
         )}
 
         {/* Timeline labels — italic serif var(--muted), centered under
-            each period span. When the chart runs sub-yearly, labels are
-            short tags (Q1, Q2, ..., M3, ...). When yearly, the full
-            "Year N" form. Matches FlowOverTime's x-axis treatment. */}
+            each period. Yearly cases keep the full "Year N" form; all
+            other granularities use a short prefix (Q1, M1, W1, D1). */}
         {Array.from({ length: N }).map((_, i) => {
           const cx = xForSample(i + 0.5);
-          const yearPosStart = i / ppy;
-          const yearPosEnd   = (i + 1) / ppy;
           const isPayback = showCrossing
-            && paybackYear > yearPosStart && paybackYear <= yearPosEnd;
-          let label;
-          if (ppy === 1)       label = `Year ${i + 1}`;
-          else if (ppy === 4)  label = `Q${i + 1}`;
-          else if (ppy === 12) label = `M${i + 1}`;
-          else                 label = `P${i + 1}`;
+            && paybackPeriod > i && paybackPeriod <= i + 1;
+          const label = isYearly ? `Year ${i + 1}` : `${u.short}${i + 1}`;
+          const density = N > 12 ? "11" : (N > 6 ? "12" : "14");
           return (
             <text key={`per-${i}`} x={cx} y={height - 10}
-                  fontSize={ppy > 4 ? "11" : (ppy > 1 ? "12" : "14")}
+                  fontSize={density}
                   fontStyle="italic"
                   fontFamily="var(--serif)"
                   textAnchor="middle"

@@ -269,13 +269,9 @@ const App = () => {
     () => computeModel(summaryItems, A_eff),
     [summaryItems, A_eff]
   );
-  const irrValue = React.useMemo(
-    () => computeIRR(summaryItems, A_eff),
-    [summaryItems, A_eff]
-  );
   // Payback data drives the "when does the money come back?" panel that
-  // sits between the Total row and Risks. Nominal cashflow (not PV) so
-  // the chart and the prose agree pixel-for-number with what the eye sees.
+  // sits between the Total row and Risks. Nominal cashflow (no discounting)
+  // so the chart and prose agree pixel-for-number with what the eye sees.
   const paybackData = React.useMemo(
     () => computePayback(summaryItems, A_eff),
     [summaryItems, A_eff]
@@ -325,7 +321,7 @@ const App = () => {
 
   // Assumptions referenced by currently-visible benefit items (scope ≤ level).
   const visibleAssumptionIds = React.useMemo(() => {
-    const ids = new Set(["discount_rate"]);
+    const ids = new Set();
     for (const it of adjustedItems) {
       if (it.kind !== "benefit") continue;
       const scope = [1, 2, 3].includes(it.scope) ? it.scope : 1;
@@ -478,7 +474,7 @@ const App = () => {
                       onClick={() => {
                         exportXlsx({
                           items: adjustedItems, assumptions: assumptionsEff,
-                          model, A: A_eff, irrValue,
+                          model, A: A_eff,
                           projectName: PROJECT_META.name,
                           projectShortName: PROJECT_META.shortName,
                           projectDescription: PROJECT_META.description,
@@ -538,7 +534,6 @@ const App = () => {
         A={A_eff}
         assumptions={assumptionsEff}
         setAssumption={setAssumption}
-        irrValue={irrValue}
         paybackData={paybackData}
         horizon={HORIZON}
         viewOnly={viewOnly}
@@ -678,7 +673,6 @@ const App = () => {
       items={adjustedItems}
       assumptions={assumptionsEff}
       A={A_eff}
-      irrValue={irrValue}
       horizon={HORIZON}
     />
     </>
@@ -976,12 +970,13 @@ const StyledCheckbox = ({ checked, onChange, label, title, fontSize, color }) =>
 };
 
 const NetBenefitRow = ({
-  npv, costsPV, bcr, irr, bonusPV,
+  npv, costsPV, bonusPV, paybackPeriod,
   elevated, showCostsHint, horizon,
   niceRounding, setNiceRounding,
 }) => {
   const positive = npv >= 0;
   const accent = positive ? "var(--green-deep)" : "var(--red-deep)";
+  const u = periodUnit(GRANULARITY);
   // "Stuck" detection: sentinel sits in normal flow just after the row.
   // When the row anchors to the viewport bottom, the sentinel is pushed
   // below the viewport. When the row sits in its natural position, the
@@ -1018,8 +1013,8 @@ const NetBenefitRow = ({
     };
   }, [elevated]);
 
-  const showBcr = costsPV > 0 && Number.isFinite(bcr);
-  const showIrr = irr != null && Number.isFinite(irr);
+  const showPayback = paybackPeriod != null && paybackPeriod > 0;
+  const startsPositive = paybackPeriod === 0;
 
   // Shared text content rendered both in the bar (default) and in the
   // overlaid fixed clone (when elevated). The clone has the same flex
@@ -1034,13 +1029,13 @@ const NetBenefitRow = ({
         display: "flex", flexDirection: "column", gap: 2,
         visibility: forOverlay ? "visible" : (elevated ? "hidden" : "visible"),
       }}>
-        <span>Total over {timelineLabel(horizon, PERIODS_PER_YEAR)}</span>
+        <span>Total over {timelineLabel(horizon, GRANULARITY)}</span>
         <span style={{
           fontFamily: "var(--sans)", fontSize: 12, fontWeight: 500,
           color: "var(--muted)", letterSpacing: "0.01em",
           textTransform: "none",
         }}>
-          today's dollars, after costs
+          after costs, over the horizon
         </span>
       </div>
       <div style={{
@@ -1085,26 +1080,20 @@ const NetBenefitRow = ({
             </span>
           )}
         </div>
-        {(showBcr || showIrr) && (
+        {(showPayback || startsPositive) && (
           <div style={{
             display: "flex", gap: 14,
             fontFamily: "var(--sans)", fontSize: 11,
             color: "var(--muted)", letterSpacing: "0.01em",
           }}>
-            {showBcr && (
-              <span
-                title="Benefit-Cost Ratio — every $1 of cost returns this much in benefits."
-              >
-                <span style={{ color: "var(--ink-2)", fontFamily: "var(--mono)", fontWeight: 600 }}>{bcr.toFixed(2)}×</span>
-                {" "}return per dollar
+            {startsPositive && (
+              <span title="Cumulative net is positive from period 1 — no upfront outlay to absorb.">
+                <span style={{ color: "var(--ink-2)", fontFamily: "var(--mono)", fontWeight: 600 }}>positive from {u.one} 1</span>
               </span>
             )}
-            {showIrr && (
-              <span
-                title="Internal Rate of Return — the implied annual interest rate this project earns you."
-              >
-                <span style={{ color: "var(--ink-2)", fontFamily: "var(--mono)", fontWeight: 600 }}>{(irr * 100).toFixed(0)}%</span>
-                {" "}annual return rate
+            {showPayback && (
+              <span title={`The cumulative net first crosses zero ${u.one} ${Math.ceil(paybackPeriod)} — that's when the project has paid for itself.`}>
+                <span style={{ color: "var(--ink-2)", fontFamily: "var(--mono)", fontWeight: 600 }}>payback {u.one} {Math.max(1, Math.ceil(paybackPeriod))}</span>
               </span>
             )}
           </div>
@@ -1860,7 +1849,7 @@ const InlineAssumptionEditor = ({ a, value, onChange, disabled }) => {
 //   Hover → peek the right-margin assumptions only (no layout shift).
 //   Click → lock open with the full expansion (left description + marginalia).
 const BenefitItemRow = ({ item, model, A, assumptions, setAssumption, viewOnly, opacity, isExpanded, hoveredId, onToggle, onHoverChange, horizon, isMobile, scope }) => {
-  const pv = (model.perItem[item.id]?.grossPV ?? 0);
+  const pv = (model.perItem[item.id]?.total ?? 0);
   const usedIds = Array.isArray(item.uses) ? item.uses : [];
   const usedAssumptions = (assumptions || []).filter(a => usedIds.includes(a.id));
   const isQualitative = (item.benefitKind || "qualitative") === "qualitative";
@@ -1928,7 +1917,7 @@ const BenefitItemRow = ({ item, model, A, assumptions, setAssumption, viewOnly, 
 // Per-cost row — same expanding-with-marginalia pattern as BenefitItemRow.
 // Value renders in dark yellow (no minus sign, no red).
 const CostItemRow = ({ item, model, A, assumptions, setAssumption, viewOnly, isExpanded, onToggle, horizon, isMobile, isHighlighted, onHover, hoveredId }) => {
-  const pv = (model.perItem[item.id]?.grossPV ?? 0);
+  const pv = (model.perItem[item.id]?.total ?? 0);
   const usedIds = Array.isArray(item.uses) ? item.uses : [];
   const usedAssumptions = (assumptions || []).filter(a => usedIds.includes(a.id));
   const accent = "var(--red-deep)";
@@ -2040,7 +2029,7 @@ const CostItemRow = ({ item, model, A, assumptions, setAssumption, viewOnly, isE
               <span style={{
                 fontSize: 12, color: "var(--muted-2)", fontFamily: "var(--mono)",
                 marginLeft: 10, fontWeight: 400,
-              }}>over {timelineLabel(horizon, PERIODS_PER_YEAR)}</span>
+              }}>over {timelineLabel(horizon, GRANULARITY)}</span>
             </div>
             {item.desc && (
               <div style={{ fontSize: 13, lineHeight: 1.6, color: "var(--ink-2)" }}>
@@ -2100,7 +2089,7 @@ const CostsBreakdown = ({ costs, model, A, assumptions, setAssumption, horizon, 
           {/* Drop cost lines that round to $0 — same threshold as the
               benefit column rows. */}
           {costs
-            .filter(i => Math.abs(model.perItem[i.id]?.grossPV ?? 0) >= 0.5)
+            .filter(i => Math.abs(model.perItem[i.id]?.total ?? 0) >= 0.5)
             .map(i => (
             <div key={i.id} style={{ borderBottom: "1px solid var(--line)" }}>
               <CostItemRow
@@ -2153,7 +2142,7 @@ const BenefitColumn = ({
   // number.
   const renderedRows = rows.filter(r => {
     if ((r.benefitKind || "qualitative") === "qualitative") return true;
-    const pv = model.perItem[r.id]?.grossPV ?? 0;
+    const pv = model.perItem[r.id]?.total ?? 0;
     return Math.abs(pv) >= 0.5;
   });
   const phantomCount = Math.max(0, maxRows - renderedRows.length);
@@ -2836,7 +2825,7 @@ const BenefitListItem = ({
 }) => {
   const pv = effectiveValue != null
     ? effectiveValue
-    : ((model.perItem[item.id]?.grossPV) ?? 0);
+    : ((model.perItem[item.id]?.total) ?? 0);
   const isQualitative = (item.benefitKind || "qualitative") === "qualitative";
   const valueDisp = isQualitative
     ? null
@@ -2945,15 +2934,9 @@ const FlowOverTime = ({
 }) => {
   if (!items || items.length === 0) return null;
   if (!horizon || horizon < 1) return null;
-  const ppy   = Math.max(1, Math.round(PERIODS_PER_YEAR || 1));
-  const total = horizon * ppy;
-  const unit  = periodUnit(ppy);
-  // Prefer the period-resolution series when available so the panel
-  // matches the cumulative chart's cadence. Fall back to yearly cash
-  // for any legacy item series.
-  const seriesFor = (it) => model.perItem[it.id]?.cashPeriods
-    || model.perItem[it.id]?.cash
-    || [];
+  const total = horizon;
+  const unit  = periodUnit(GRANULARITY);
+  const seriesFor = (it) => model.perItem[it.id]?.series || [];
   // Skip items with zero cash flow (qualitative + zero-valued items).
   const cashItems = items.filter(it => {
     const s = seriesFor(it);
@@ -2965,26 +2948,19 @@ const FlowOverTime = ({
     let sum = 0;
     cashItems.forEach(it => {
       const s = seriesFor(it);
-      // When an item series is yearly-only, replicate the year value
-      // evenly across its periods so the bars still represent it.
-      const v = s.length === total
-        ? s[p]
-        : (s.length === horizon ? (s[Math.floor(p / ppy)] || 0) / ppy : 0);
-      sum += Math.abs(v);
+      sum += Math.abs(s[p] || 0);
     });
     return sum;
   });
   const max = Math.max(...slots, 1);
   if (slots.every(v => v < 0.5)) return null;
   const isDim = (id) => hoveredId && hoveredId !== id;
-  // With many bars, downsize the per-bar label so 12 quarters fit at
-  // 1080px without truncation. Hide the $-amount inline once ppy is
-  // high enough that the column gets cramped — the chart still tells
-  // the shape story.
+  // Density-driven label sizing — keeps the chart readable from 5 bars
+  // (annual case) up to ~60 (daily/weekly case).
   const showAmounts = total <= 6;
-  const colGap   = ppy === 1 ? 14 : (ppy <= 4 ? 6 : 3);
-  const labelFs  = ppy === 1 ? 14 : (ppy <= 4 ? 12 : 10);
-  const amountFs = ppy === 1 ? 13 : 11;
+  const colGap   = total <= 6 ? 14 : (total <= 12 ? 6 : 3);
+  const labelFs  = total <= 6 ? 14 : (total <= 12 ? 12 : 10);
+  const amountFs = total <= 6 ? 13 : 11;
   return (
     <div style={{
       marginTop: 24,
@@ -3026,18 +3002,14 @@ const FlowOverTime = ({
               )}
               <div style={{
                 width: "100%",
-                maxWidth: ppy === 1 ? 56 : 36,
+                maxWidth: total <= 6 ? 56 : 36,
                 height: barH,
                 display: "flex", flexDirection: "column-reverse",
                 overflow: "hidden",
               }}>
                 {cashItems.map(it => {
                   const s = seriesFor(it);
-                  const v = Math.abs(
-                    s.length === total
-                      ? s[pi]
-                      : (s.length === horizon ? (s[Math.floor(pi / ppy)] || 0) / ppy : 0)
-                  );
+                  const v = Math.abs(s[pi] || 0);
                   if (v < 0.5 || slot < 0.5) return null;
                   const segH = (v / slot) * 100;
                   const baseOp = (itemColors && itemColors[it.id]?.opacity) ?? 0.4;
@@ -3076,13 +3048,9 @@ const FlowOverTime = ({
         paddingTop: 10,
       }}>
         {slots.map((_, i) => {
-          // Build the per-bar label. For sub-yearly cases use the short
-          // tag (Q1..Q12 / M1..M36); year case keeps the long "Year N".
-          let label;
-          if (ppy === 1)       label = `Year ${i + 1}`;
-          else if (ppy === 4)  label = `Q${i + 1}`;
-          else if (ppy === 12) label = `M${i + 1}`;
-          else                 label = `${unit.short}${i + 1}`;
+          // Build the per-bar label. Yearly cases keep the long "Year N";
+          // all other granularities use the short tag (Q1, M1, W1, D1).
+          const label = GRANULARITY === "year" ? `Year ${i + 1}` : `${unit.short}${i + 1}`;
           return (
             <div key={i} style={{
               fontFamily: "var(--serif)", fontStyle: "italic",
@@ -3289,13 +3257,13 @@ const ScopeView = (props) => {
   const { items, model, accent, showChart = true } = props;
   const [hoveredId, setHoveredId] = React.useState(null);
   const cashItems = items.filter(it => {
-    const series = model.perItem[it.id];
-    if (!series || !Array.isArray(series.cash)) return false;
-    return series.cash.some(v => Math.abs(v) >= 0.5);
+    const s = model.perItem[it.id];
+    if (!s || !Array.isArray(s.series)) return false;
+    return s.series.some(v => Math.abs(v) >= 0.5);
   });
   const sortedCash = cashItems.slice().sort((a, b) => {
-    const av = (model.perItem[a.id]?.cash || []).reduce((s, x) => s + Math.abs(x), 0);
-    const bv = (model.perItem[b.id]?.cash || []).reduce((s, x) => s + Math.abs(x), 0);
+    const av = Math.abs(model.perItem[a.id]?.total ?? 0);
+    const bv = Math.abs(model.perItem[b.id]?.total ?? 0);
     return bv - av;
   });
   const itemColors = {};
@@ -3347,8 +3315,8 @@ const ScopeSummary = ({
     const ak = TYPE_ORDER.indexOf(a.benefitKind || "qualitative");
     const bk = TYPE_ORDER.indexOf(b.benefitKind || "qualitative");
     if (ak !== bk) return ak - bk;
-    const av = effectiveItemValue ? effectiveItemValue(a) : ((model.perItem[a.id]?.grossPV) ?? 0);
-    const bv = effectiveItemValue ? effectiveItemValue(b) : ((model.perItem[b.id]?.grossPV) ?? 0);
+    const av = effectiveItemValue ? effectiveItemValue(a) : ((model.perItem[a.id]?.total) ?? 0);
+    const bv = effectiveItemValue ? effectiveItemValue(b) : ((model.perItem[b.id]?.total) ?? 0);
     return Math.abs(bv) - Math.abs(av);
   });
   const sign = valuePrefix === "−" ? "−" : "+";
@@ -3388,7 +3356,7 @@ const ScopeSummary = ({
       </header>
       <div style={{ display: "flex", flexDirection: "column" }}>
         {sorted.map(item => {
-          const pv = effectiveItemValue ? effectiveItemValue(item) : ((model.perItem[item.id]?.grossPV) ?? 0);
+          const pv = effectiveItemValue ? effectiveItemValue(item) : ((model.perItem[item.id]?.total) ?? 0);
           // Cost items always carry a dollar value (no qualitative
           // costs). For benefits, qualitative items have no dollar.
           const isQual = item.kind === "cost"
@@ -3506,7 +3474,7 @@ const ToCBand = ({ items, model, tone, onJump }) => {
       }}>At a glance</p>
       <div style={{ display: "flex", flexDirection: "column" }}>
         {items.map(item => {
-          const pv = (model.perItem[item.id]?.grossPV) ?? 0;
+          const pv = (model.perItem[item.id]?.total) ?? 0;
           const isQual = (item.benefitKind || "qualitative") === "qualitative";
           const valueDisp = isQual
             ? null
@@ -3573,7 +3541,7 @@ const ScopeBlock = ({
 
   const sumGroup = (rows) => rows
     .filter(r => (r.benefitKind || "qualitative") !== "qualitative")
-    .reduce((s, r) => s + (model.perItem[r.id]?.grossPV ?? 0), 0);
+    .reduce((s, r) => s + (model.perItem[r.id]?.total ?? 0), 0);
 
   return (
     <section>
@@ -3715,7 +3683,7 @@ const BenefitsListing = ({
 
   const effectiveItemValue = React.useCallback((it) => {
     if (it.id in itemOv) return itemOv[it.id];
-    return (model.perItem[it.id]?.grossPV) ?? 0;
+    return (model.perItem[it.id]?.total) ?? 0;
   }, [itemOv, model]);
   const isItemOverridden = React.useCallback((id) => id in itemOv, [itemOv]);
 
@@ -4060,7 +4028,7 @@ const CategoryItemListPanel = ({ rows, model, effectiveItemValue, isItemOverridd
     </p>
     <div>
       {rows.map(item => {
-        const pv = effectiveItemValue ? effectiveItemValue(item) : ((model.perItem[item.id]?.grossPV) ?? 0);
+        const pv = effectiveItemValue ? effectiveItemValue(item) : ((model.perItem[item.id]?.total) ?? 0);
         const isQual = (item.benefitKind || "qualitative") === "qualitative";
         const val = isQual ? null : `+${fmtMoney(Math.abs(pv), { exact: true })}`;
         const ov = isItemOverridden && isItemOverridden(item.id);
@@ -4112,7 +4080,7 @@ const SectionItemListPanel = ({ scopeItems, model, effectiveItemValue, isItemOve
           if (rows.length === 0) return null;
           const sum = rows
             .filter(r => (r.benefitKind || "qualitative") !== "qualitative")
-            .reduce((s, r) => s + (effectiveItemValue ? effectiveItemValue(r) : ((model.perItem[r.id]?.grossPV) ?? 0)), 0);
+            .reduce((s, r) => s + (effectiveItemValue ? effectiveItemValue(r) : ((model.perItem[r.id]?.total) ?? 0)), 0);
           const isQual = kind === "qualitative";
           return (
             <button key={kind} onClick={() => onCategoryClick(kind)} style={{
@@ -4273,7 +4241,7 @@ const EstimateModal = ({ item, model, A, assumptions, setAssumption, viewOnly, h
   if (!mounted) return null;
   const displayItem = lastItemRef.current;
   if (!displayItem) return null;
-  const pv = model.perItem[displayItem.id]?.grossPV ?? 0;
+  const pv = model.perItem[displayItem.id]?.total ?? 0;
   const isQualitative = (displayItem.benefitKind || "qualitative") === "qualitative";
   const usedIds = Array.isArray(displayItem.uses) ? displayItem.uses : [];
   const usedAssumptions = (assumptions || []).filter(a => usedIds.includes(a.id));
@@ -5218,7 +5186,7 @@ const MinimalLanding = (props) => {
   const costs   = adjustedItems.filter(it => it.kind === "cost");
 
   const pvSum = (arr) => arr.reduce(
-    (s, it) => s + (model.perItem[it.id]?.grossPV ?? 0), 0
+    (s, it) => s + (model.perItem[it.id]?.total ?? 0), 0
   );
   const s1PV = pvSum(s1Items);
   const s2PV = pvSum(s2Items);
@@ -5260,7 +5228,7 @@ const MinimalLanding = (props) => {
   const __sectionOv = (levelOverrides && levelOverrides.section) || {};
   const __effItem = (it) => (it.id in __itemOv)
     ? __itemOv[it.id]
-    : ((model.perItem[it.id]?.grossPV) ?? 0);
+    : ((model.perItem[it.id]?.total) ?? 0);
   const __effCatTotal = (scope, kind) => {
     const k = `${scope}_${kind}`;
     if (k in __catOv) return __catOv[k];
@@ -5296,11 +5264,11 @@ const MinimalLanding = (props) => {
     qualitative: 0,
   };
 
-  const yearTotalsCost = model.yearTotals.cost;
-  const costYMax = Math.max(...yearTotalsCost, 1) * 1.05;
+  const periodTotalsCost = model.periodTotals.cost;
+  const costYMax = Math.max(...periodTotalsCost, 1) * 1.05;
   const costSeries = costs.map(i => {
     const s = model.perItem[i.id];
-    return { key: i.id, color: i.color, name: i.name, values: s.cash };
+    return { key: i.id, color: i.color, name: i.name, values: s.series };
   });
 
   // First-run framing — appears once before the buyer has gone through
@@ -6242,7 +6210,7 @@ const MinimalLanding = (props) => {
                   ...conditionProse,
                   fontStyle: "normal", fontWeight: 500, color: "var(--ink)",
                 }}>
-                  Over the next {timelineLabel(horizon, PERIODS_PER_YEAR)}, given the assumptions you entered, we expect:
+                  Over the next {timelineLabel(horizon, GRANULARITY)}, given the assumptions you entered, we expect:
                 </p>
               </div>
             )}
@@ -6287,7 +6255,7 @@ const MinimalLanding = (props) => {
           setLevelOverride={setLevelOverride}
           showBonus={showBonus}
           setShowBonus={setShowBonus}
-          grandTotalLabel={`Total over ${timelineLabel(horizon, PERIODS_PER_YEAR)}`}
+          grandTotalLabel={`Total over ${timelineLabel(horizon, GRANULARITY)}`}
           grandTotalValue={`${npvDisp < 0 ? "−" : ""}${fmtMoney(Math.abs(npvDisp), { exact: true })}`}
           grandTotalAccent={npvDisp >= 0 ? "var(--green-deep)" : "var(--red-deep)"}
         />
@@ -6341,9 +6309,8 @@ const MinimalLanding = (props) => {
       <NetBenefitRow
         npv={npvDisp}
         costsPV={costsDisp}
-        bcr={props.summaryModel.bcr}
-        irr={props.irrValue}
         bonusPV={bonusDisp}
+        paybackPeriod={props.paybackData && props.paybackData.paybackPeriod}
         elevated={modalOpen}
         showCostsHint={!costsRowVisible}
         horizon={horizon}
@@ -6360,31 +6327,21 @@ const MinimalLanding = (props) => {
       {(() => {
         const pb = props.paybackData;
         if (!pb || !pb.cumulative || pb.cumulative.length === 0) return null;
-        const hasMotion = pb.yearly.some(v => Math.abs(v) >= 0.5)
+        const hasMotion = pb.periodly.some(v => Math.abs(v) >= 0.5)
           || pb.cumulative.some(v => Math.abs(v) >= 0.5);
         if (!hasMotion) return null;
 
         const troughAbs = Math.abs(pb.trough.value);
         const endingAbs = Math.abs(pb.endingValue);
-        const paysBackInHorizon = pb.paybackYear != null && pb.paybackYear > 0;
-        const startsPositive = pb.paybackYear === 0;
-        // Period-aware payback label. With periodsPerYear=4 we say "Q9"
-        // (using paybackPeriod rounded up); otherwise "year N".
-        const ppy = pb.periodsPerYear || 1;
-        const u = periodUnit(ppy);
-        const paybackPositionLabel = (() => {
-          if (!paysBackInHorizon) return null;
-          if (ppy === 1) {
-            const yr = Math.max(1, Math.ceil(pb.paybackYear));
-            return `year ${yr}`;
-          }
-          const pIdx = Math.max(1, Math.ceil(pb.paybackPeriod || (pb.paybackYear * ppy)));
-          return `${u.short}${pIdx}`;
-        })();
-        const endLabel = ppy === 1
-          ? `year ${horizon}`
-          : `${u.short}${horizon * ppy}`;
-        const startLabel = ppy === 1 ? "year 1" : `${u.short}1`;
+        const paysBackInHorizon = pb.paybackPeriod != null && pb.paybackPeriod > 0;
+        const startsPositive = pb.paybackPeriod === 0;
+        // Granularity-aware payback labels.
+        const u = periodUnit(GRANULARITY);
+        const paybackPositionLabel = paysBackInHorizon
+          ? `${u.one} ${Math.max(1, Math.ceil(pb.paybackPeriod))}`
+          : null;
+        const endLabel   = `${u.one} ${horizon}`;
+        const startLabel = `${u.one} 1`;
 
         const ValBad  = ({ children }) => (
           <strong style={{ fontStyle: "normal", fontWeight: 500, color: "var(--red-deep)" }}>{children}</strong>
@@ -6436,13 +6393,13 @@ const MinimalLanding = (props) => {
               {prose}
             </p>
             <CumulativeCashflow
-              yearly={pb.yearly}
-              cumulative={pb.cumulativePeriods || pb.cumulative}
-              paybackYear={pb.paybackYear}
+              periodly={pb.periodly}
+              cumulative={pb.cumulative}
+              paybackPeriod={pb.paybackPeriod}
               trough={pb.trough}
               endingValue={pb.endingValue}
               horizon={horizon}
-              periodsPerYear={pb.periodsPerYear || 1}
+              granularity={GRANULARITY}
             />
           </div>
         );

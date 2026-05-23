@@ -890,7 +890,7 @@ function buildCoverSheet({
 // Main entry. Builds workbook, registers named ranges, downloads.
 // ---------------------------------------------------------------------------
 function exportXlsx({
-  items, assumptions, model, A, irrValue,
+  items, assumptions, model, A,
   projectName, projectShortName, projectDescription,
   horizon,
 }) {
@@ -899,6 +899,14 @@ function exportXlsx({
     alert("Excel export library failed to load. Check your network and refresh.");
     return;
   }
+  // TODO(wave-4): the Excel export still references the pre-Wave-4 schema
+  // (discount_rate, NPV, IRR, startYear). Disabled until rewritten so it
+  // doesn't generate a half-correct file.
+  alert("Excel export is temporarily disabled — Wave 4 removed the discount-rate model and the exporter hasn't been updated yet.");
+  return;
+  // eslint-disable-next-line no-unreachable
+  // The body below is preserved for the rewrite. Restore it once the new
+  // granularity/startPeriod schema has a matching XLSX layout.
   const wb = XLSX.utils.book_new();
 
   // Build sheets in order of cross-reference dependency: Cashflow needs the
