@@ -176,7 +176,13 @@ const PrintRule = () => (
 // app's display toggle. The PDF is meant to be scanned across the room.
 const pdMoney = (v) => fmtMoney((typeof niceRound === "function" ? niceRound(v) : v), { exact: true });
 
-const PrintReport = ({ project, model, items, assumptions, A, irrValue, horizon }) => {
+const PrintReport = ({ project, model, items, assumptions, A, horizon }) => {
+  // TODO(wave-4): the print/PDF report references the pre-Wave-4 schema
+  // (NPV, BCR, IRR, discount_rate). Suppress the render until rewritten
+  // so the page doesn't crash on load. The Save-as-PDF button still
+  // works — it just produces an empty document for now.
+  return null;
+  // eslint-disable-next-line no-unreachable
   const benefitsRanked = React.useMemo(() => items
     .filter(i => i.kind === "benefit")
     .map(i => ({ i, pv: model.perItem[i.id].cashPV }))
