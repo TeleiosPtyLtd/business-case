@@ -391,17 +391,22 @@ function computeSensitivity(items, A, baseAssumptions, optsOrDelta) {
 // =========================================================================
 
 // Period-unit naming. Driven by the case's granularity so headlines,
-// chart labels, and payback prose all read in the unit the buyer chose.
+// chart labels, And-subtotal suffixes, and payback prose all read in
+// the unit the buyer chose.
+//   one/many — singular and plural noun forms ("month", "months")
+//   short    — single-letter prefix for compact labels ("M", "Q", "Y")
+//   suffix   — conventional per-period rate suffix ("/mo", "/qtr", "/yr")
+//   adj      — adjective form for prose ("monthly", "quarterly", "annual")
 const __GRAN_LABELS = {
-  day:     { one: "day",     many: "days",     short: "D" },
-  week:    { one: "week",    many: "weeks",    short: "W" },
-  month:   { one: "month",   many: "months",   short: "M" },
-  quarter: { one: "quarter", many: "quarters", short: "Q" },
-  year:    { one: "year",    many: "years",    short: "Y" },
+  day:     { one: "day",     many: "days",     short: "D", suffix: "/d",   adj: "daily" },
+  week:    { one: "week",    many: "weeks",    short: "W", suffix: "/wk",  adj: "weekly" },
+  month:   { one: "month",   many: "months",   short: "M", suffix: "/mo",  adj: "monthly" },
+  quarter: { one: "quarter", many: "quarters", short: "Q", suffix: "/qtr", adj: "quarterly" },
+  year:    { one: "year",    many: "years",    short: "Y", suffix: "/yr",  adj: "annual" },
 };
 function periodUnit(granularity) {
   return __GRAN_LABELS[String(granularity || "").toLowerCase()]
-    || { one: "period", many: "periods", short: "P" };
+    || { one: "period", many: "periods", short: "P", suffix: "/period", adj: "per-period" };
 }
 // Pretty label for the timeline span — "18 months", "12 quarters", etc.
 function timelineLabel(horizon, granularity) {
