@@ -5135,8 +5135,10 @@ const MinimalLanding = (props) => {
     if (raw == null || !Number.isFinite(raw)) return "—";
     const u = unit || "";
     if (u === "$")    return fmtMoneyExact(raw);
-    if (u === "$/yr") return fmtMoneyExact(raw) + "/yr";
-    if (u === "$/hr") return fmtMoneyExact(raw) + "/hr";
+    // Per-period dollar units — surface the suffix verbatim. Authors
+    // pick the unit string to match the case's granularity ($/mo,
+    // $/qtr, $/yr, …); the formatter doesn't enforce one over another.
+    if (u.startsWith("$/")) return fmtMoneyExact(raw) + u.slice(1);
     if (u === "%")    return `${raw}%`;
     return u ? `${raw} ${u}` : `${raw}`;
   };
@@ -5807,12 +5809,12 @@ const MinimalLanding = (props) => {
                       const commitmentFs = raw.filter(f => !f.confirmed);
                       const allConfirmed = commitmentFs.length === 0;
                       const series = model.perItem[it.id];
-                      const annual = series && series.grossAnnual != null ? series.grossAnnual : 0;
-                      // Derive the period suffix from `item.lump`:
-                      // recurring items produce $X per year of the
-                      // horizon; lump items are a single-event dollar
-                      // value with no period.
-                      const totalUnit = it.lump ? "$" : "$/yr";
+                      const annual = series && series.gross != null ? series.gross : 0;
+                      // Derive the period suffix from `item.lump` and the
+                      // case's granularity. Recurring items show per-period
+                      // rates (e.g. "+$300/mo"); lump items are single-event
+                      // dollars with no rate suffix.
+                      const totalUnit = it.lump ? "$" : `$${periodUnit(GRANULARITY).suffix}`;
                       const signedTotal = (raw, unit) => {
                         if (raw == null || !Number.isFinite(raw)) return "?";
                         const sign = raw > 0 ? "+" : (raw < 0 ? "−" : "");
@@ -6024,9 +6026,9 @@ const MinimalLanding = (props) => {
                     const raw = factorsFor(it).map(formatFactor);
                     const allConfirmed = raw.every(f => f.confirmed);
                     const series = model.perItem[it.id];
-                    const annual = series && series.grossAnnual != null
-                      ? series.grossAnnual : 0;
-                    const totalUnit = it.lump ? "$" : "$/yr";
+                    const annual = series && series.gross != null
+                      ? series.gross : 0;
+                    const totalUnit = it.lump ? "$" : `$${periodUnit(GRANULARITY).suffix}`;
                     const signedTotal = (v, unit) => {
                       if (v == null || !Number.isFinite(v)) return "?";
                       const sign = v > 0 ? "+" : (v < 0 ? "−" : "");
@@ -6119,14 +6121,14 @@ const MinimalLanding = (props) => {
                               ? fmtSignedPct(sumFor(recurringRev) / baselineRevenueValue)
                               : "?",
                             recurringRevResolved
-                              ? `${fmtSignedMoney(sumFor(recurringRev))}/yr`
+                              ? `${fmtSignedMoney(sumFor(recurringRev))}${periodUnit(GRANULARITY).suffix}`
                               : null,
-                            "Change to your annual revenue"
+                            `Change to your ${periodUnit(GRANULARITY).adj} revenue`
                           )}
                         {recurringCost.length > 0
                           && renderSubtotal(
                             recurringCostResolved
-                              ? `${fmtMoneyExact(sumFor(recurringCost))}/yr`
+                              ? `${fmtMoneyExact(sumFor(recurringCost))}${periodUnit(GRANULARITY).suffix}`
                               : "?",
                             null,
                             "Recurring cost savings"
