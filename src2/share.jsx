@@ -339,6 +339,11 @@ const buildSnapshot = ({ items, assumptionsEff, overrides }) => ({
   generatedAt: new Date().toISOString(),
   meta: window.PROJECT_META,
   horizon: window.HORIZON,
+  // periodsPerYear is the sub-yearly resolution (1=years, 4=quarters,
+  // 12=months). Carry through so the viewer's engine recomputes ramp
+  // curves and the cumulative chart at the same resolution the author
+  // saw.
+  periodsPerYear: window.PERIODS_PER_YEAR || 1,
   // Serialize each item with a formula STRING so the viewer can recompile.
   // Order of preference for the formula source:
   //   1. item._grossSrc  - wizard-created or rehydrated items already have this
