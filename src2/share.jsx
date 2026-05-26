@@ -10,6 +10,77 @@
 const SHARE_ENDPOINT = (typeof window !== "undefined" && window.CBAGENT_SHARE_ENDPOINT)
   || "/api/share";
 
+// ---------- Clerk (Teleios identity) — lazy-loaded the first time the
+// Share modal opens. When no publishable key is configured (cloned
+// templates that point at a non-Teleios backend), this all becomes a
+// no-op and the modal works exactly as before.
+
+let __clerkPromise = null;
+const loadClerk = () => {
+  if (__clerkPromise) return __clerkPromise;
+  const pk = (typeof window !== "undefined" && window.CBAGENT_CLERK_PUBLISHABLE_KEY) || "";
+  if (!pk) { __clerkPromise = Promise.resolve(null); return __clerkPromise; }
+  __clerkPromise = new Promise((resolve, reject) => {
+    // Publishable key embeds the Frontend API host as base64url + a $ terminator.
+    let frapi;
+    try {
+      const enc     = pk.replace(/^pk_(test|live)_/, "");
+      const decoded = atob(enc.replace(/-/g, "+").replace(/_/g, "/")).replace(/\$$/, "");
+      frapi = decoded;
+    } catch { return reject(new Error("Bad CBAGENT_CLERK_PUBLISHABLE_KEY")); }
+
+    if (window.Clerk && window.Clerk.loaded) return resolve(window.Clerk);
+
+    const script = document.createElement("script");
+    script.src         = `https://${frapi}/npm/@clerk/clerk-js@5/dist/clerk.browser.js`;
+    script.async       = true;
+    script.crossOrigin = "anonymous";
+    script.setAttribute("data-clerk-publishable-key", pk);
+    script.onerror = () => reject(new Error("Failed to load @clerk/clerk-js"));
+    script.onload  = () => {
+      if (!window.Clerk) return reject(new Error("Clerk script loaded but window.Clerk missing"));
+      window.Clerk.load().then(() => resolve(window.Clerk)).catch(reject);
+    };
+    document.head.appendChild(script);
+  });
+  return __clerkPromise;
+};
+
+// React hook: subscribes to Clerk session changes, re-renders on sign in/out.
+// Returns { loading, clerk, user } — user is null when signed out.
+const useClerk = () => {
+  const [state, setState] = React.useState({ loading: true, clerk: null, user: null });
+  React.useEffect(() => {
+    let cancelled = false;
+    loadClerk().then(clerk => {
+      if (cancelled) return;
+      if (!clerk) { setState({ loading: false, clerk: null, user: null }); return; }
+      const apply = () => {
+        if (cancelled) return;
+        setState({ loading: false, clerk, user: clerk.user || null });
+      };
+      apply();
+      // Clerk.addListener fires on sign-in / sign-out / token refresh.
+      const unsub = clerk.addListener(apply);
+      return () => { unsub && unsub(); };
+    }).catch(err => {
+      console.warn("Clerk load failed:", err && err.message);
+      if (!cancelled) setState({ loading: false, clerk: null, user: null });
+    });
+    return () => { cancelled = true; };
+  }, []);
+  return state;
+};
+
+// Get an Authorization: Bearer header for the current session, or null.
+const getAuthHeader = async (clerk) => {
+  if (!clerk || !clerk.session) return null;
+  try {
+    const token = await clerk.session.getToken();
+    return token ? { "Authorization": `Bearer ${token}` } : null;
+  } catch { return null; }
+};
+
 const __relativeTime = (iso) => {
   if (!iso) return null;
   const ms = Date.now() - new Date(iso).getTime();
@@ -40,6 +111,9 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
   // which case the dialog quietly falls back to the basic meta block.
   const [meta, setMeta] = React.useState(null);
 
+  // Clerk session (null when no key configured or signed out).
+  const auth = useClerk();
+
   const canCreate = password.length >= 4 && password === confirm && status !== "uploading";
 
   // Pull the stats block whenever the modal opens in update mode and
@@ -63,9 +137,10 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
     setStatus("uploading");
     setError(null);
     try {
+      const authHeader = await getAuthHeader(auth.clerk);
       const res = await fetch(SHARE_ENDPOINT, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(authHeader || {}) },
         body: JSON.stringify({ password, snapshot }),
       });
       if (!res.ok) {
@@ -103,10 +178,11 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
     setStatus("uploading");
     setError(null);
     try {
-      const baseUrl = SHARE_ENDPOINT.replace(/\/$/, "");
+      const baseUrl    = SHARE_ENDPOINT.replace(/\/$/, "");
+      const authHeader = await getAuthHeader(auth.clerk);
       const res = await fetch(`${baseUrl}/${encodeURIComponent(existingShare.id)}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(authHeader || {}) },
         body: JSON.stringify({ ownerToken: existingShare.ownerToken, snapshot }),
       });
       if (!res.ok) {
@@ -143,6 +219,7 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
 
   return (
     <Modal title={isUpdating ? "Update shared business case" : "Share business case"} onClose={onClose} width={520}>
+      <AuthBox auth={auth} compact={isUpdating || justCreated} />
       {justCreated && (
         <div>
           <div style={{ color: "var(--muted)", fontSize: 13, marginBottom: 14 }}>
@@ -274,6 +351,105 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
   );
 };
 
+// AuthBox — Clerk sign-in surface above the share form.
+//
+//   Loading:  small grey "Loading sign-in…" hint
+//   No key:   renders nothing (template not configured for accounts)
+//   Signed-in: "Signed in as <email>" + faint Sign out
+//   Signed-out: prominent "Sign in to keep track of this case" + faint
+//               "Continue without signing in" — the latter just closes
+//               this box; the modal's existing flow takes over.
+//
+// `compact` collapses the signed-out CTA into a single line (used when
+// the modal is showing an URL bar / status — we don't want the sign-in
+// pitch to dominate after the upload has already happened).
+const AuthBox = ({ auth, compact }) => {
+  const [hidden, setHidden] = React.useState(false);
+  if (hidden) return null;
+  if (auth.loading) {
+    return (
+      <div style={authBoxBase}>
+        <div style={{ color: "var(--muted-2)", fontSize: 12 }}>Loading sign-in…</div>
+      </div>
+    );
+  }
+  if (!auth.clerk) return null; // no publishable key — silent fallback
+
+  const user = auth.user;
+  if (user) {
+    const ident = user.primaryEmailAddress?.emailAddress
+      || user.username
+      || user.firstName
+      || "your account";
+    return (
+      <div style={{ ...authBoxBase, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ fontSize: 12, color: "var(--muted)" }}>
+          Signed in as <strong style={{ color: "var(--ink)", fontWeight: 500 }}>{ident}</strong>.
+          Shares will appear in your dashboard.
+        </div>
+        <button
+          onClick={() => auth.clerk.signOut()}
+          style={{
+            border: "none", background: "transparent", color: "var(--muted)",
+            fontSize: 11.5, cursor: "pointer", padding: 0, textDecoration: "underline",
+          }}
+        >Sign out</button>
+      </div>
+    );
+  }
+
+  // Signed out
+  if (compact) {
+    return (
+      <div style={{ ...authBoxBase, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ fontSize: 12, color: "var(--muted)" }}>Not signed in.</div>
+        <button
+          onClick={() => auth.clerk.openSignIn({})}
+          style={{
+            border: "none", background: "transparent", color: "var(--ink)",
+            fontSize: 11.5, cursor: "pointer", padding: 0, textDecoration: "underline", fontWeight: 500,
+          }}
+        >Sign in</button>
+      </div>
+    );
+  }
+  return (
+    <div style={authBoxBase}>
+      <div style={{ fontSize: 13, color: "var(--ink)", marginBottom: 8 }}>
+        <strong style={{ fontWeight: 500 }}>Sign in to keep track of this case</strong>
+      </div>
+      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12, lineHeight: 1.5 }}>
+        Signed-in shares show up in your dashboard. Sign-in is optional — you can
+        still share without an account.
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <button
+          onClick={() => auth.clerk.openSignIn({})}
+          style={{
+            border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--bg)",
+            padding: "7px 14px", borderRadius: 999, fontSize: 12.5, fontWeight: 500, cursor: "pointer",
+          }}
+        >Sign in</button>
+        <button
+          onClick={() => setHidden(true)}
+          style={{
+            border: "none", background: "transparent", color: "var(--muted-2)",
+            fontSize: 11.5, cursor: "pointer", padding: 0, textDecoration: "underline",
+          }}
+        >Continue without signing in</button>
+      </div>
+    </div>
+  );
+};
+
+const authBoxBase = {
+  marginBottom: 14,
+  padding: "10px 12px",
+  borderRadius: 10,
+  background: "var(--surface-2)",
+  border: "1px solid var(--line)",
+};
+
 const UrlBar = ({ url, onCopy, copied }) => (
   <div style={{
     border: "1px solid var(--line-strong)", borderRadius: 10,
@@ -364,4 +540,4 @@ const buildSnapshot = ({ items, assumptionsEff, overrides }) => ({
   overrides,
 });
 
-Object.assign(window, { ShareModal, buildSnapshot });
+Object.assign(window, { ShareModal, buildSnapshot, loadClerk, useClerk });

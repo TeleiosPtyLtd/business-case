@@ -387,6 +387,13 @@ const App = () => {
   // SaaS pills. Author tools stay one click away behind the icon.
   const [overflowOpen, setOverflowOpen] = React.useState(false);
   const overflowMenuRef = React.useRef(null);
+
+  // Clerk session state for the overflow menu's Sign in / Signed in row.
+  // Same hook used inside the Share modal — returns { loading, clerk, user }.
+  // When no publishable key is configured, auth.clerk stays null and the
+  // menu row falls back to a no-op "Sign in" label (rare path; only matters
+  // for forked templates with the key stripped).
+  const auth = useClerk();
   React.useEffect(() => {
     if (!overflowOpen) return;
     const onDoc = (e) => {
@@ -510,11 +517,28 @@ const App = () => {
                         sub="Discard local edits"
                         onClick={() => { setResetOpen(true); setOverflowOpen(false); }}
                       />
-                      <ExportMenuItem
-                        title="Sign in"
-                        sub="Teleios consultant access"
-                        onClick={() => setOverflowOpen(false)}
-                      />
+                      {auth.user ? (
+                        <ExportMenuItem
+                          title={`Signed in as ${
+                            auth.user.primaryEmailAddress?.emailAddress
+                            || auth.user.username
+                            || auth.user.firstName
+                            || "your account"
+                          }`}
+                          sub="Sign out"
+                          onClick={() => { setOverflowOpen(false); auth.clerk.signOut(); }}
+                        />
+                      ) : (
+                        <ExportMenuItem
+                          title="Sign in"
+                          sub="Teleios consultant access"
+                          onClick={async () => {
+                            setOverflowOpen(false);
+                            const c = auth.clerk || await loadClerk();
+                            if (c) c.openSignIn({});
+                          }}
+                        />
+                      )}
                     </div>
                   </div>
                 )}
