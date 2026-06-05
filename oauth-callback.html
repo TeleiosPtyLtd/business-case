@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Signing in…</title>
+<style>
+  body { font-family: -apple-system, "Hanken Grotesk", sans-serif;
+         background: #FBFAF6; color: #14130F; line-height: 1.55;
+         max-width: 420px; margin: 80px auto; padding: 32px; text-align: center; }
+  p { color: #6B6657; }
+</style>
+</head>
+<body>
+  <p id="msg">Signing you in…</p>
+<script>
+// The auth host (auth.teleios.au) runs Clerk on a real teleios.au domain,
+// signs the user in, then redirects this popup to:
+//   {studio-origin}/oauth-callback.html?token=…&userId=…&email=…
+// We're now on the SAME origin as the studio that opened us, so we can
+// postMessage the token straight back to window.opener and close.
+(function () {
+  var p = new URLSearchParams(location.search);
+  var data = {
+    type:   "teleios-auth",
+    token:  p.get("token"),
+    userId: p.get("userId"),
+    email:  p.get("email") || null,
+  };
+  try {
+    if (window.opener) {
+      // Target origin === our own origin === the studio's origin.
+      window.opener.postMessage(data, location.origin);
+      document.getElementById("msg").textContent = "Signed in. You can close this window.";
+    } else {
+      document.getElementById("msg").textContent =
+        "Signed in, but the original window is gone. You can close this tab.";
+    }
+  } catch (e) {
+    document.getElementById("msg").textContent = "Sign-in error: " + (e && e.message || e);
+  }
+  // Give the message a tick to deliver, then close.
+  setTimeout(function () { try { window.close(); } catch (e) {} }, 250);
+})();
+</script>
+</body>
+</html>

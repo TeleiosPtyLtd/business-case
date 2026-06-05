@@ -1,26 +1,19 @@
-// Configure where the Share button uploads to.
+// Configure where the Share button uploads to, and where sign-in happens.
 //
-// Default: the Teleios hosted backend at models.teleios.au.
-// Override per-clone if you want to point at a different deployment:
+// The studio always publishes to the hosted Teleios backend — you author
+// locally (live-server) but the case lives on the platform. There is no
+// local backend in the normal flow, so the endpoint is production even on
+// localhost. Override per-clone if you point at a different deployment:
 //
 //   window.CBAGENT_SHARE_ENDPOINT = "https://your-host.example.com/api/share";
 
-// Auto-detect local dev vs. production based on the page's origin. Local
-// hosts use the dev backend + Clerk's dev instance (which permits localhost);
-// everything else uses the Teleios production backend + the production
-// Clerk instance at clerk.teleios.au. Override either by setting the
-// matching window.* property before this script runs.
-(function () {
-  var loc = typeof location !== "undefined" ? location : null;
-  var isLocal = loc && (loc.hostname === "localhost" || loc.hostname === "127.0.0.1");
+window.CBAGENT_SHARE_ENDPOINT =
+  window.CBAGENT_SHARE_ENDPOINT || "https://models.teleios.au/api/share";
 
-  window.CBAGENT_SHARE_ENDPOINT = window.CBAGENT_SHARE_ENDPOINT
-    || (isLocal ? "http://localhost:8787/api/share"
-                : "https://models.teleios.au/api/share");
-
-  // Publishable key is safe to ship to the browser — it encodes only
-  // the Frontend API hostname. The secret key never leaves the server.
-  window.CBAGENT_CLERK_PUBLISHABLE_KEY = window.CBAGENT_CLERK_PUBLISHABLE_KEY
-    || (isLocal ? "pk_test_bWludC1sYWItNjEuY2xlcmsuYWNjb3VudHMuZGV2JA"
-                : "pk_live_Y2xlcmsudGVsZWlvcy5hdSQ");
-})();
+// Sign-in is handled by the platform identity host. The studio never runs
+// Clerk.js itself — production Clerk can't run on a localhost origin, so
+// instead the Share modal opens a popup to this host (which runs Clerk on
+// a real teleios.au domain) and receives a token back. Same handshake the
+// `teleios` CLI uses. See oauth-callback.html.
+window.CBAGENT_AUTH_URL =
+  window.CBAGENT_AUTH_URL || "https://auth.teleios.au";

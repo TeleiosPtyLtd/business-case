@@ -9,76 +9,108 @@
 
 const SHARE_ENDPOINT = (typeof window !== "undefined" && window.CBAGENT_SHARE_ENDPOINT)
   || "/api/share";
+const AUTH_URL = (typeof window !== "undefined" && window.CBAGENT_AUTH_URL)
+  || "https://auth.teleios.au";
 
-// ---------- Clerk (Teleios identity) — lazy-loaded the first time the
-// Share modal opens. When no publishable key is configured (cloned
-// templates that point at a non-Teleios backend), this all becomes a
-// no-op and the modal works exactly as before.
+// ---------- Teleios session (popup handshake) ----------
+//
+// The studio runs on localhost, but production Clerk can't run on a
+// localhost origin. So instead of loading Clerk.js here, we open a popup
+// to the platform identity host (auth.teleios.au/cli/login), which runs
+// Clerk on a real teleios.au domain, signs the user in, then redirects
+// back to {origin}/oauth-callback.html with a token. That callback page
+// postMessages the token to us. Same handshake the `teleios` CLI uses, so
+// the token is a production JWT the models.teleios.au backend can verify.
+//
+// The token is a Clerk session JWT (short-lived). We stamp it with the
+// time we received it; if it's stale when we need it, we transparently
+// re-run the popup — which completes silently if the Clerk session on
+// teleios.au is still alive (no second sign-in prompt).
 
-let __clerkPromise = null;
-const loadClerk = () => {
-  if (__clerkPromise) return __clerkPromise;
-  const pk = (typeof window !== "undefined" && window.CBAGENT_CLERK_PUBLISHABLE_KEY) || "";
-  if (!pk) { __clerkPromise = Promise.resolve(null); return __clerkPromise; }
-  __clerkPromise = new Promise((resolve, reject) => {
-    // Publishable key embeds the Frontend API host as base64url + a $ terminator.
-    let frapi;
-    try {
-      const enc     = pk.replace(/^pk_(test|live)_/, "");
-      const decoded = atob(enc.replace(/-/g, "+").replace(/_/g, "/")).replace(/\$$/, "");
-      frapi = decoded;
-    } catch { return reject(new Error("Bad CBAGENT_CLERK_PUBLISHABLE_KEY")); }
+const SESSION_KEY = "teleios_session_v1";
+const TOKEN_FRESH_MS = 50 * 1000; // Clerk session tokens last ~60s
 
-    if (window.Clerk && window.Clerk.loaded) return resolve(window.Clerk);
-
-    const script = document.createElement("script");
-    script.src         = `https://${frapi}/npm/@clerk/clerk-js@5/dist/clerk.browser.js`;
-    script.async       = true;
-    script.crossOrigin = "anonymous";
-    script.setAttribute("data-clerk-publishable-key", pk);
-    script.onerror = () => reject(new Error("Failed to load @clerk/clerk-js"));
-    script.onload  = () => {
-      if (!window.Clerk) return reject(new Error("Clerk script loaded but window.Clerk missing"));
-      window.Clerk.load().then(() => resolve(window.Clerk)).catch(reject);
-    };
-    document.head.appendChild(script);
-  });
-  return __clerkPromise;
+const readSession = () => {
+  try { return JSON.parse(localStorage.getItem(SESSION_KEY) || "null"); }
+  catch { return null; }
+};
+const writeSession = (s) => {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch {}
+};
+const clearStoredSession = () => {
+  try { localStorage.removeItem(SESSION_KEY); } catch {}
 };
 
-// React hook: subscribes to Clerk session changes, re-renders on sign in/out.
-// Returns { loading, clerk, user } — user is null when signed out.
-const useClerk = () => {
-  const [state, setState] = React.useState({ loading: true, clerk: null, user: null });
-  React.useEffect(() => {
-    let cancelled = false;
-    loadClerk().then(clerk => {
-      if (cancelled) return;
-      if (!clerk) { setState({ loading: false, clerk: null, user: null }); return; }
-      const apply = () => {
-        if (cancelled) return;
-        setState({ loading: false, clerk, user: clerk.user || null });
-      };
-      apply();
-      // Clerk.addListener fires on sign-in / sign-out / token refresh.
-      const unsub = clerk.addListener(apply);
-      return () => { unsub && unsub(); };
-    }).catch(err => {
-      console.warn("Clerk load failed:", err && err.message);
-      if (!cancelled) setState({ loading: false, clerk: null, user: null });
-    });
-    return () => { cancelled = true; };
+// Opens the sign-in popup and resolves with { token, userId, email, ts }.
+// MUST be called from within a user gesture (click handler) or the popup
+// is blocked. Rejects on cancel/close/blocked.
+const popupSignIn = () => new Promise((resolve, reject) => {
+  const cb  = `${location.origin}/oauth-callback.html`;
+  const url = `${AUTH_URL.replace(/\/$/, "")}/cli/login?cb=${encodeURIComponent(cb)}`;
+  const popup = window.open(url, "teleios-signin",
+    "width=480,height=720,menubar=no,toolbar=no,location=no,status=no");
+  if (!popup) return reject(new Error("Popup blocked — allow popups for this site to sign in."));
+
+  let settled = false;
+  const cleanup = () => {
+    settled = true;
+    window.removeEventListener("message", onMessage);
+    clearInterval(poll);
+  };
+  const onMessage = (e) => {
+    // The callback page runs on our own origin and posts back to us.
+    if (e.origin !== location.origin) return;
+    const d = e.data || {};
+    if (d.type !== "teleios-auth") return;
+    cleanup();
+    try { popup.close(); } catch {}
+    if (!d.token || !d.userId) return reject(new Error("Sign-in returned no token."));
+    resolve({ token: d.token, userId: d.userId, email: d.email || null, ts: Date.now() });
+  };
+  window.addEventListener("message", onMessage);
+  // Detect a user closing the popup before completing.
+  const poll = setInterval(() => {
+    if (settled) return;
+    if (popup.closed) { cleanup(); reject(new Error("Sign-in window closed.")); }
+  }, 500);
+});
+
+// React hook exposing the current session + sign in/out + a token getter
+// that guarantees freshness. `user` is null when signed out.
+const useTeleiosSession = () => {
+  const [session, setSession] = React.useState(() => readSession());
+
+  const signIn = React.useCallback(async () => {
+    const s = await popupSignIn();
+    writeSession(s);
+    setSession(s);
+    return s;
   }, []);
-  return state;
-};
 
-// Get an Authorization: Bearer header for the current session, or null.
-const getAuthHeader = async (clerk) => {
-  if (!clerk || !clerk.session) return null;
-  try {
-    const token = await clerk.session.getToken();
-    return token ? { "Authorization": `Bearer ${token}` } : null;
-  } catch { return null; }
+  const signOut = React.useCallback(() => {
+    clearStoredSession();
+    setSession(null);
+  }, []);
+
+  // Returns a fresh bearer token, re-running the popup if the stored one
+  // is stale. Re-run is silent when the Clerk session on teleios.au is
+  // still valid. Returns null only when there is no session at all.
+  const getFreshToken = React.useCallback(async () => {
+    const cur = readSession();
+    if (cur && Date.now() - cur.ts < TOKEN_FRESH_MS) return cur.token;
+    if (!cur) return null; // never signed in → caller shares anonymously
+    const s = await popupSignIn();
+    writeSession(s);
+    setSession(s);
+    return s.token;
+  }, []);
+
+  return {
+    user: session ? { email: session.email, userId: session.userId } : null,
+    signIn,
+    signOut,
+    getFreshToken,
+  };
 };
 
 const __relativeTime = (iso) => {
@@ -95,7 +127,21 @@ const __relativeTime = (iso) => {
   return `${d}d ago`;
 };
 
-const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
+const ShareModal = ({ snapshot, onClose, existingShare: existingShareProp, onShareSaved }) => {
+  // Ignore a stored share whose URL lives on a different origin than the
+  // current endpoint. This happens after the endpoint changes (e.g. an old
+  // localhost test share when we now publish to models.teleios.au): that URL
+  // is dead, so don't offer to "update" it — start a fresh share instead.
+  // The next successful share overwrites the stale record via onShareSaved.
+  const existingShare = (() => {
+    if (!existingShareProp || !existingShareProp.url) return null;
+    let endpointOrigin;
+    try { endpointOrigin = new URL(SHARE_ENDPOINT, location.href).origin; }
+    catch { return existingShareProp; }
+    try { return new URL(existingShareProp.url).origin === endpointOrigin ? existingShareProp : null; }
+    catch { return null; }
+  })();
+
   const initialMode = existingShare ? "update" : "create";
   const [mode, setMode]         = React.useState(initialMode);
   const [password, setPassword] = React.useState("");
@@ -111,8 +157,17 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
   // which case the dialog quietly falls back to the basic meta block.
   const [meta, setMeta] = React.useState(null);
 
-  // Clerk session (null when no key configured or signed out).
-  const auth = useClerk();
+  const session = useTeleiosSession();
+
+  // Two-step create flow: choose identity (gate) → set the password (form).
+  // Authors already signed in skip the gate. `authChoice` records the pick
+  // so upload() knows whether to attach a bearer token.
+  const [authChoice, setAuthChoice] = React.useState(session.user ? "account" : null);
+  const [step, setStep]             = React.useState(session.user ? "form" : "gate");
+  const [signingIn, setSigningIn]   = React.useState(false);
+  // Set when the user chose "account" but the server didn't attribute the
+  // share (token expired / rejected) — the share still succeeds, anonymously.
+  const [attribWarning, setAttribWarning] = React.useState(false);
 
   const canCreate = password.length >= 4 && password === confirm && status !== "uploading";
 
@@ -132,15 +187,51 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
     return () => { cancelled = true; };
   }, [mode, existingShare?.id, existingShare?.ownerToken, justUpdatedAt]);
 
+  // --- Gate actions (create flow, step 1) ---
+  const gateSignIn = async () => {
+    setSigningIn(true);
+    setError(null);
+    try {
+      await session.signIn();      // opens popup → resolves with a token
+      setAuthChoice("account");
+      setStep("form");
+    } catch (e) {
+      setError(e.message || "Sign-in failed");
+    } finally {
+      setSigningIn(false);
+    }
+  };
+  const gateAnon = () => {
+    setAuthChoice("anon");
+    setError(null);
+    setStep("form");
+  };
+  const switchAccount = () => {
+    session.signOut();
+    setAuthChoice(null);
+    setStep("gate");
+  };
+
   // First-time share OR explicit "share as new"
   const upload = async () => {
     setStatus("uploading");
     setError(null);
+    setAttribWarning(false);
     try {
-      const authHeader = await getAuthHeader(auth.clerk);
+      // Attach a bearer token only when the author chose to sign in.
+      // getFreshToken() re-runs the popup if the stored token went stale;
+      // it stays within this click's user gesture (no awaits precede it).
+      let authHeader = {};
+      if (authChoice === "account") {
+        try {
+          const token = await session.getFreshToken();
+          if (token) authHeader = { "Authorization": `Bearer ${token}` };
+          else setAttribWarning(true);
+        } catch { setAttribWarning(true); }
+      }
       const res = await fetch(SHARE_ENDPOINT, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(authHeader || {}) },
+        headers: { "Content-Type": "application/json", ...authHeader },
         body: JSON.stringify({ password, snapshot }),
       });
       if (!res.ok) {
@@ -148,6 +239,8 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
         throw new Error(`${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`);
       }
       const data = await res.json();
+      // Signed in but the server didn't attribute it → token was rejected.
+      if (authChoice === "account" && !data.authorUserId) setAttribWarning(true);
       const url = data.url || `${window.location.origin}/view/${data.id}`;
       setShareUrl(url);
       setStatus("done");
@@ -178,11 +271,17 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
     setStatus("uploading");
     setError(null);
     try {
-      const baseUrl    = SHARE_ENDPOINT.replace(/\/$/, "");
-      const authHeader = await getAuthHeader(auth.clerk);
+      const baseUrl = SHARE_ENDPOINT.replace(/\/$/, "");
+      let authHeader = {};
+      if (session.user) {
+        try {
+          const token = await session.getFreshToken();
+          if (token) authHeader = { "Authorization": `Bearer ${token}` };
+        } catch {}
+      }
       const res = await fetch(`${baseUrl}/${encodeURIComponent(existingShare.id)}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json", ...(authHeader || {}) },
+        headers: { "Content-Type": "application/json", ...authHeader },
         body: JSON.stringify({ ownerToken: existingShare.ownerToken, snapshot }),
       });
       if (!res.ok) {
@@ -210,16 +309,18 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
     catch {}
   };
 
-  // -- Render: three states --
-  //   create        - first-time share (or "share as new" mode)
+  // -- Render states --
+  //   create/gate   - step 1: sign in to keep track, or continue without
+  //   create/form   - step 2: choose a password, upload
   //   update        - existing share is loaded, show URL + Update button
   //   done (create) - just created, show URL + copy
   const isUpdating = mode === "update" && existingShare;
   const justCreated = status === "done" && shareUrl && mode === "create";
+  const showGate = !isUpdating && !justCreated && step === "gate";
+  const showForm = !isUpdating && !justCreated && step === "form";
 
   return (
     <Modal title={isUpdating ? "Update shared business case" : "Share business case"} onClose={onClose} width={520}>
-      <AuthBox auth={auth} compact={isUpdating || justCreated} />
       {justCreated && (
         <div>
           <div style={{ color: "var(--muted)", fontSize: 13, marginBottom: 14 }}>
@@ -227,11 +328,33 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
             Subsequent clicks of <strong>Share</strong> will update this same link.
           </div>
           <UrlBar url={shareUrl} onCopy={copy} copied={copied} />
-          <div style={{ color: "var(--muted-2)", fontSize: 11.5, marginTop: 10, lineHeight: 1.5 }}>
-            Password: viewers will be prompted on first load. The password is stored hashed on the backend.
-            An owner token has been saved locally so you can push updates from this device.
-          </div>
+          {attribWarning ? (
+            <div style={{ color: "var(--muted-2)", fontSize: 11.5, marginTop: 10, lineHeight: 1.5 }}>
+              Saved with an owner token on this device — but we couldn't link it to your
+              account (your sign-in expired). It won't appear in your dashboard.
+            </div>
+          ) : authChoice === "account" ? (
+            <div style={{ color: "var(--muted-2)", fontSize: 11.5, marginTop: 10, lineHeight: 1.5 }}>
+              Saved to your account — find it any time at{" "}
+              <a href="https://models.teleios.au/mine" target="_blank" rel="noopener"
+                 style={{ color: "var(--muted)" }}>your dashboard</a>.
+            </div>
+          ) : (
+            <div style={{ color: "var(--muted-2)", fontSize: 11.5, marginTop: 10, lineHeight: 1.5 }}>
+              Password: viewers will be prompted on first load. An owner token has been saved
+              locally so you can push updates from this device — keep this device, or the link is lost.
+            </div>
+          )}
         </div>
+      )}
+
+      {showGate && (
+        <GateStep
+          signingIn={signingIn}
+          error={error}
+          onSignIn={gateSignIn}
+          onAnon={gateAnon}
+        />
       )}
 
       {isUpdating && status !== "uploading" && (
@@ -299,12 +422,14 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
         </div>
       )}
 
-      {(!isUpdating && !justCreated) && (
+      {showForm && (
         <div>
+          <AuthBanner choice={authChoice} email={session.user?.email} onSwitch={switchAccount} />
+
           <div style={{ color: "var(--muted)", fontSize: 13, marginBottom: 14, lineHeight: 1.55 }}>
             {existingShare
               ? "Create a new share with its own URL. The existing share won't be affected."
-              : "Upload a snapshot of this business case to a hosted viewer. Choose a password — viewers will need it to open the link."}
+              : "Choose a password — viewers will need it to open the link."}
           </div>
           {existingShare && (
             <div style={{
@@ -331,19 +456,16 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
 
           {error && <ErrorBox text={error} />}
 
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
-            <button onClick={onClose} style={secondaryBtnStyle}>Cancel</button>
-            <button onClick={upload} disabled={!canCreate} style={primaryBtnStyle(canCreate)}>
-              {status === "uploading" ? "Uploading…" : "Upload"}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18 }}>
+            <button onClick={() => { setStep("gate"); setError(null); }} style={ghostBtnStyle}>
+              ← Back
             </button>
-          </div>
-
-          <div style={{
-            marginTop: 18, paddingTop: 14, borderTop: "1px dashed var(--line)",
-            fontSize: 11.5, color: "var(--muted-2)", lineHeight: 1.5,
-          }}>
-            Endpoint: <span style={{ fontFamily: "var(--mono)" }}>{SHARE_ENDPOINT}</span>.
-            Configure via <code style={{ fontFamily: "var(--mono)" }}>window.CBAGENT_SHARE_ENDPOINT</code>.
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={onClose} style={secondaryBtnStyle}>Cancel</button>
+              <button onClick={upload} disabled={!canCreate} style={primaryBtnStyle(canCreate)}>
+                {status === "uploading" ? "Uploading…" : "Share"}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -351,104 +473,89 @@ const ShareModal = ({ snapshot, onClose, existingShare, onShareSaved }) => {
   );
 };
 
-// AuthBox — Clerk sign-in surface above the share form.
-//
-//   Loading:  small grey "Loading sign-in…" hint
-//   No key:   renders nothing (template not configured for accounts)
-//   Signed-in: "Signed in as <email>" + faint Sign out
-//   Signed-out: prominent "Sign in to keep track of this case" + faint
-//               "Continue without signing in" — the latter just closes
-//               this box; the modal's existing flow takes over.
-//
-// `compact` collapses the signed-out CTA into a single line (used when
-// the modal is showing an URL bar / status — we don't want the sign-in
-// pitch to dominate after the upload has already happened).
-const AuthBox = ({ auth, compact }) => {
-  const [hidden, setHidden] = React.useState(false);
-  if (hidden) return null;
-  if (auth.loading) {
+// AuthBanner — slim status line at the top of the password step, reflecting
+// the choice made on the gate.
+const AuthBanner = ({ choice, email, onSwitch }) => {
+  if (choice === "account") {
     return (
-      <div style={authBoxBase}>
-        <div style={{ color: "var(--muted-2)", fontSize: 12 }}>Loading sign-in…</div>
-      </div>
-    );
-  }
-  if (!auth.clerk) return null; // no publishable key — silent fallback
-
-  const user = auth.user;
-  if (user) {
-    const ident = user.primaryEmailAddress?.emailAddress
-      || user.username
-      || user.firstName
-      || "your account";
-    return (
-      <div style={{ ...authBoxBase, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-        <div style={{ fontSize: 12, color: "var(--muted)" }}>
-          Signed in as <strong style={{ color: "var(--ink)", fontWeight: 500 }}>{ident}</strong>.
-          Shares will appear in your dashboard.
-        </div>
-        <button
-          onClick={() => auth.clerk.signOut()}
-          style={{
-            border: "none", background: "transparent", color: "var(--muted)",
-            fontSize: 11.5, cursor: "pointer", padding: 0, textDecoration: "underline",
-          }}
-        >Sign out</button>
-      </div>
-    );
-  }
-
-  // Signed out
-  if (compact) {
-    return (
-      <div style={{ ...authBoxBase, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-        <div style={{ fontSize: 12, color: "var(--muted)" }}>Not signed in.</div>
-        <button
-          onClick={() => auth.clerk.openSignIn({})}
-          style={{
-            border: "none", background: "transparent", color: "var(--ink)",
-            fontSize: 11.5, cursor: "pointer", padding: 0, textDecoration: "underline", fontWeight: 500,
-          }}
-        >Sign in</button>
+      <div style={{
+        marginBottom: 14, padding: "9px 12px", borderRadius: 10,
+        background: "color-mix(in srgb, var(--green) 10%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--green) 30%, transparent)",
+        fontSize: 12, color: "var(--green-deep)",
+        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+      }}>
+        <span>Signed in{email ? <> as <strong style={{ fontWeight: 600 }}>{email}</strong></> : null} · this case will be saved to your dashboard.</span>
+        <button onClick={onSwitch} style={{
+          border: "none", background: "transparent", color: "var(--green-deep)",
+          fontSize: 11, cursor: "pointer", padding: 0, textDecoration: "underline", whiteSpace: "nowrap",
+        }}>Not you?</button>
       </div>
     );
   }
   return (
-    <div style={authBoxBase}>
-      <div style={{ fontSize: 13, color: "var(--ink)", marginBottom: 8 }}>
-        <strong style={{ fontWeight: 500 }}>Sign in to keep track of this case</strong>
-      </div>
-      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12, lineHeight: 1.5 }}>
-        Signed-in shares show up in your dashboard. Sign-in is optional — you can
-        still share without an account.
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-        <button
-          onClick={() => auth.clerk.openSignIn({})}
-          style={{
-            border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--bg)",
-            padding: "7px 14px", borderRadius: 999, fontSize: 12.5, fontWeight: 500, cursor: "pointer",
-          }}
-        >Sign in</button>
-        <button
-          onClick={() => setHidden(true)}
-          style={{
-            border: "none", background: "transparent", color: "var(--muted-2)",
-            fontSize: 11.5, cursor: "pointer", padding: 0, textDecoration: "underline",
-          }}
-        >Continue without signing in</button>
-      </div>
+    <div style={{
+      marginBottom: 14, padding: "9px 12px", borderRadius: 10,
+      background: "var(--surface-2)", border: "1px solid var(--line)",
+      fontSize: 12, color: "var(--muted)",
+      display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+    }}>
+      <span>Sharing without an account — keep the link &amp; password safe, this case won't be in any dashboard.</span>
+      <button onClick={onSwitch} style={{
+        border: "none", background: "transparent", color: "var(--ink)",
+        fontSize: 11, cursor: "pointer", padding: 0, textDecoration: "underline", whiteSpace: "nowrap",
+      }}>Sign in</button>
     </div>
   );
 };
 
-const authBoxBase = {
-  marginBottom: 14,
-  padding: "10px 12px",
-  borderRadius: 10,
-  background: "var(--surface-2)",
-  border: "1px solid var(--line)",
-};
+// GateStep — step 1 of the create flow. The identity choice, before the
+// password. Primary call to action is to sign in (so the case is tracked);
+// a faint escape hatch shares anonymously with a clear warning.
+const GateStep = ({ signingIn, error, onSignIn, onAnon }) => (
+  <div style={{ padding: "8px 0 4px" }}>
+    <div style={{
+      fontFamily: "var(--serif)", fontWeight: 500, fontSize: 21, lineHeight: 1.2,
+      color: "var(--ink)", marginBottom: 10,
+    }}>
+      Sign in to keep track of this case
+    </div>
+    <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 20, lineHeight: 1.55 }}>
+      Sign in and this case is saved to your account — you can find it, update it,
+      and re-share it from anywhere. Takes a few seconds.
+    </div>
+
+    <button
+      onClick={onSignIn}
+      disabled={signingIn}
+      style={{
+        width: "100%", border: "1px solid var(--ink)",
+        background: signingIn ? "var(--line-strong)" : "var(--ink)",
+        color: signingIn ? "var(--muted-2)" : "var(--bg)",
+        padding: "11px 16px", borderRadius: 999, fontSize: 13.5, fontWeight: 600,
+        cursor: signingIn ? "wait" : "pointer",
+      }}
+    >
+      {signingIn ? "Waiting for sign-in…" : "Sign in to share this case"}
+    </button>
+
+    {error && <ErrorBox text={error} />}
+
+    <div style={{ textAlign: "center", marginTop: 16 }}>
+      <button
+        onClick={onAnon}
+        disabled={signingIn}
+        style={{
+          border: "none", background: "transparent", color: "var(--muted-2)",
+          fontSize: 11.5, cursor: signingIn ? "default" : "pointer", padding: "4px 0",
+          textDecoration: "underline", lineHeight: 1.5,
+        }}
+      >
+        Continue without signing in <span style={{ color: "var(--red-deep)" }}>(this case could be lost)</span>
+      </button>
+    </div>
+  </div>
+);
 
 const UrlBar = ({ url, onCopy, copied }) => (
   <div style={{
@@ -540,4 +647,4 @@ const buildSnapshot = ({ items, assumptionsEff, overrides }) => ({
   overrides,
 });
 
-Object.assign(window, { ShareModal, buildSnapshot, loadClerk, useClerk });
+Object.assign(window, { ShareModal, buildSnapshot, useTeleiosSession });
