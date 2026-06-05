@@ -169,6 +169,9 @@ const ShareModal = ({ snapshot, onClose, existingShare: existingShareProp, onSha
   const [mode, setMode]         = React.useState(initialMode);
   const [password, setPassword] = React.useState("");
   const [confirm, setConfirm]   = React.useState("");
+  // Optional portfolio tags (comma-separated). Sent on create; the server
+  // normalises. Edit them anytime from your dashboard at /mine.
+  const [tagsInput, setTagsInput] = React.useState("");
   const [status, setStatus]     = React.useState("idle"); // idle | uploading | done | error
   const [shareUrl, setShareUrl] = React.useState(existingShare?.url || null);
   const [error, setError]       = React.useState(null);
@@ -263,7 +266,7 @@ const ShareModal = ({ snapshot, onClose, existingShare: existingShareProp, onSha
       const res = await fetch(SHARE_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeader },
-        body: JSON.stringify({ password, snapshot }),
+        body: JSON.stringify({ password, snapshot, tags: tagsInput }),
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
@@ -562,6 +565,13 @@ const ShareModal = ({ snapshot, onClose, existingShare: existingShareProp, onSha
           <Field label="Confirm password">
             <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)}
               style={inputStyle} />
+          </Field>
+          <Field label="Tags — optional">
+            <input type="text" value={tagsInput} onChange={e => setTagsInput(e.target.value)}
+              placeholder="client:acme, pricing, q3   (comma-separated)" style={inputStyle} />
+            <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 5, lineHeight: 1.45 }}>
+              Organise your portfolio. Filter by these in your dashboard. Edit anytime.
+            </div>
           </Field>
 
           {error && <ErrorBox text={error} />}
