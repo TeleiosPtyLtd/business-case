@@ -747,10 +747,40 @@ const buildSnapshot = ({ items, assumptionsEff, overrides }) => {
     for (const a of assumptionsEff) A[a.id] = a.value;
     const m = computeModel(items, A);
     const pay = (typeof computePayback === "function") ? computePayback(items, A) : null;
+    // Benefit split: scope-1 = primary (the load-bearing case); scope 2/3 =
+    // bonus upside. Mirrors the page's "net benefit uses scope-1 only" framing.
+    let primaryBenefit = 0, bonusBenefits = 0;
+    for (const it of items) {
+      if (it.kind === "cost") continue;
+      const t = (m.perItem[it.id] && m.perItem[it.id].total) || 0;
+      const sc = [1, 2, 3].includes(it.scope) ? it.scope : 1;
+      if (sc === 1) primaryBenefit += t; else bonusBenefits += t;
+    }
+    // Risk counts, scope-1-relevant (mirrors the Risks section): a risk counts
+    // if it threatens an assumption used by a scope-1 benefit or by any cost.
+    // locus "commitment" = controllable (we own); else = environmental (world).
+    let risksControllable = null, risksEnvironmental = null;
+    const cfg = (typeof window !== "undefined" && window.PROJECT_CONFIG) || {};
+    if (Array.isArray(cfg.risks) && cfg.risks.length) {
+      const allIds = assumptionsEff.map(a => a.id);
+      const usesOf = (it) => (Array.isArray(it.uses) && it.uses.length)
+        ? it.uses
+        : (typeof extractAssumptionIds === "function" ? extractAssumptionIds(it._grossSrc || "", allIds) : []);
+      const scope1Ass = new Set();
+      for (const it of items) {
+        const inScope = it.kind === "cost" || ([1, 2, 3].includes(it.scope) ? it.scope : 1) === 1;
+        if (inScope) usesOf(it).forEach(u => scope1Ass.add(u));
+      }
+      const rel = cfg.risks.filter(r => r && r.threatens && scope1Ass.has(r.threatens));
+      risksControllable = rel.filter(r => r.locus === "commitment").length;
+      risksEnvironmental = rel.filter(r => r.locus !== "commitment").length;
+    }
     headline = {
       net: m.net, totalBenefits: m.totalBenefits, totalCosts: m.totalCosts,
+      primaryBenefit, bonusBenefits,
       bcr: m.totalCosts > 0 ? m.totalBenefits / m.totalCosts : null,
       paybackPeriod: pay ? pay.paybackPeriod : null,
+      risksControllable, risksEnvironmental,
       horizon: window.HORIZON, granularity: window.GRANULARITY || "year",
     };
   } catch (e) { /* headline is best-effort */ }
