@@ -360,12 +360,12 @@ function buildAssumptionsSheet(assumptions) {
   for (const a of ordered) {
     set(ws, r, COL.LABEL, { value: a.label, style: STY.label });
 
-    // Value cell — the only editable cell on the sheet. Pick percent vs
-    // number format from the unit hint.
+    // Value cell — the only editable cell on the sheet. Percent assumptions
+    // are stored on a 0–100 scale (8 means 8%), and the gross formulas divide
+    // by 100 themselves — so show the raw number here. An Excel "%" format
+    // would multiply by 100 again and read "800%".
     const isPctUnit = (a.unit === "%" || a.unit === "pp");
-    const valueStyle = isPctUnit
-      ? { ...STY.input, numFmt: a.unit === "%" ? FMT.pctFlat : FMT.int }
-      : STY.input;
+    const valueStyle = isPctUnit ? { ...STY.input, numFmt: "0.###" } : STY.input;
     set(ws, r, COL.VALUE, { value: a.value, style: valueStyle });
 
     set(ws, r, COL.UNIT, { value: a.unit || "", style: STY.labelMuted });
@@ -412,20 +412,23 @@ function buildAssumptionsSheet(assumptions) {
 // ---------------------------------------------------------------------------
 // Sheet: Cashflow — the model. Year-as-columns, line-items-as-rows.
 //
-// Returns { ws, refs: { totalsRow, npvCell, bcrCell, irrCell, ... } }
+// Returns { ws, refs: { netValueCell, bcrCell, paybackCell, ... } }
 // for cross-sheet references on the Cover.
 // ---------------------------------------------------------------------------
 function buildCashflowSheet(items, assumptions, model, A, horizon, projectName) {
   const ws = {};
 
   const H = horizon;
-  // Column index map: dynamic — year columns inserted between fixed left/right.
+  const unit = periodUnit(GRANULARITY);
+  const Cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  // Column index map: period columns sit between the fixed left (label/id) and
+  // right (total/note) columns. The Wave-4 model is undiscounted, so there is
+  // no PV column — Total is the plain sum across periods.
   const COL = { SP: 0, LABEL: 1, ID: 2 };
   COL.YEAR_FIRST = 3;
   COL.YEAR_LAST  = 3 + H - 1;
   COL.TOTAL      = COL.YEAR_LAST + 1;
-  COL.PV         = COL.YEAR_LAST + 2;
-  COL.NOTE       = COL.YEAR_LAST + 3;
+  COL.NOTE       = COL.YEAR_LAST + 2;
   const LAST_C = COL.NOTE;
 
   let r = 0;
@@ -433,7 +436,7 @@ function buildCashflowSheet(items, assumptions, model, A, horizon, projectName) 
   // Title.
   set(ws, r++, COL.LABEL, { value: projectName, style: STY.pageTitle });
   set(ws, r++, COL.LABEL, {
-    value: "Year-by-year cashflow model",
+    value: `Nominal cashflow model — value per ${unit.one}, ${unit.many} as columns`,
     style: STY.pageSubtitle,
   });
   r++; // blank
@@ -442,16 +445,12 @@ function buildCashflowSheet(items, assumptions, model, A, horizon, projectName) 
   blankRow(ws, r, COL.SP, LAST_C, STY.sectionHeader);
   set(ws, r, COL.LABEL, { value: "PARAMETERS", style: STY.sectionHeader });
   r++;
-  set(ws, r, COL.LABEL, { value: "Discount rate", style: STY.label });
-  // Green link to Assumptions sheet.
-  set(ws, r, COL.ID, { formula: "discount_rate", style: STY.linkPct });
+  set(ws, r, COL.LABEL, { value: `Horizon (${unit.many})`, style: STY.label });
+  set(ws, r, COL.ID, { value: H, style: { ...STY.formula, numFmt: FMT.int } });
   set(ws, r, COL.NOTE, {
-    value: "Named range → Assumptions sheet. Edit value there.",
+    value: "Periods modelled. Undiscounted — every period is weighted equally.",
     style: STY.labelMuted,
   });
-  r++;
-  set(ws, r, COL.LABEL, { value: "Horizon (years)", style: STY.label });
-  set(ws, r, COL.ID, { value: H, style: { ...STY.formula, numFmt: FMT.int } });
   r++;
   r++; // blank
 
@@ -460,44 +459,16 @@ function buildCashflowSheet(items, assumptions, model, A, horizon, projectName) 
   set(ws, r, COL.LABEL, { value: "PERIOD STRUCTURE", style: STY.sectionHeader });
   r++;
 
-  // Year header row.
-  set(ws, r, COL.LABEL, { value: "Year", style: STY.colHeader });
+  // Period header row.
+  set(ws, r, COL.LABEL, { value: Cap(unit.one), style: STY.colHeader });
   for (let y = 0; y < H; y++) {
     set(ws, r, COL.YEAR_FIRST + y, {
       value: y + 1,
-      style: { ...STY.yearHeader, numFmt: FMT.year },
+      style: { ...STY.yearHeader, numFmt: `"${unit.short}"0` },
     });
   }
   set(ws, r, COL.TOTAL, { value: "Total", style: STY.colHeaderRight });
-  set(ws, r, COL.PV,    { value: "PV",    style: STY.colHeaderRight });
   const yearHeaderRow = r;
-  r++;
-
-  // Period t row (0..H-1).
-  set(ws, r, COL.LABEL, { value: "Period (t)", style: STY.labelMuted });
-  for (let y = 0; y < H; y++) {
-    set(ws, r, COL.YEAR_FIRST + y, {
-      value: y,
-      style: { ...STY.formulaFactor, numFmt: FMT.int },
-    });
-  }
-  r++;
-
-  // Discount factor row — referenced by every PV formula below.
-  set(ws, r, COL.LABEL, { value: "Discount factor", style: STY.labelMuted });
-  const discFactorRow = r;
-  for (let y = 0; y < H; y++) {
-    if (y === 0) {
-      set(ws, r, COL.YEAR_FIRST + y, { value: 1, style: STY.formulaFactor });
-    } else {
-      // Chain off previous so multi-decade horizons stay precise.
-      const prev = cellAddr(r, COL.YEAR_FIRST + y - 1);
-      set(ws, r, COL.YEAR_FIRST + y, {
-        formula: `${prev}/(1+discount_rate)`,
-        style: STY.formulaFactor,
-      });
-    }
-  }
   r++;
   r++; // blank
 
@@ -512,27 +483,28 @@ function buildCashflowSheet(items, assumptions, model, A, horizon, projectName) 
     set(ws, r, COL.LABEL, { value: "Description", style: STY.colHeader });
     set(ws, r, COL.ID,    { value: "Item ID",     style: STY.colHeader });
     for (let y = 0; y < H; y++) {
-      set(ws, r, COL.YEAR_FIRST + y, { value: `Y${y + 1}`, style: STY.colHeaderRight });
+      set(ws, r, COL.YEAR_FIRST + y, { value: `${unit.short}${y + 1}`, style: STY.colHeaderRight });
     }
     set(ws, r, COL.TOTAL, { value: "Total", style: STY.colHeaderRight });
-    set(ws, r, COL.PV,    { value: "PV",    style: STY.colHeaderRight });
     r++;
 
     const firstDataRow = r;
     for (const it of itemList) {
       set(ws, r, COL.LABEL, { value: it.name, style: STY.label });
-      set(ws, r, COL.ID, { value: it._grossSrc ? it.id : it.id, style: STY.monoMuted });
+      set(ws, r, COL.ID, { value: it.id, style: STY.monoMuted });
 
-      // Resolve gross formula text. Prefer the original source string;
-      // fall back to a 0 cell for items lacking it.
+      // Active periods mirror computeItemSeries exactly: a lump fires once at
+      // startPeriod; a recurring item runs startPeriod..endPeriod (clamped to
+      // the horizon). Inactive periods get a hard 0.
       const grossSrc = it._grossSrc;
-      const startYear = it.startYear || 1;
+      const startP = Math.max(1, Math.round(Number(it.startPeriod ?? it.startYear ?? 1)));
       const lump = !!it.lump;
-      const endYear = lump ? startYear : H; // (no horizonOverride in current schema)
+      const endRaw = Number(it.endPeriod);
+      const endP = lump ? startP : Math.min(H, Number.isFinite(endRaw) ? Math.max(startP, endRaw) : H);
 
       for (let y = 0; y < H; y++) {
-        const yearIdx = y + 1;
-        const active = (yearIdx >= startYear) && (yearIdx <= endYear);
+        const period = y + 1;
+        const active = (period >= startP) && (period <= endP);
         if (!active || !grossSrc || String(grossSrc).trim() === "" || String(grossSrc).trim() === "0") {
           set(ws, r, COL.YEAR_FIRST + y, { value: 0, style: STY.formula });
         } else {
@@ -540,43 +512,33 @@ function buildCashflowSheet(items, assumptions, model, A, horizon, projectName) 
         }
       }
 
-      // Total = SUM of year cells.
+      // Total = SUM of period cells.
       const yRange = cellRange(r, COL.YEAR_FIRST, r, COL.YEAR_LAST);
-      set(ws, r, COL.TOTAL, {
-        formula: `SUM(${yRange})`,
-        style: STY.formula,
-      });
-      // PV = SUMPRODUCT of year cells × discount factor row.
-      const dfRange = cellRange(discFactorRow, COL.YEAR_FIRST, discFactorRow, COL.YEAR_LAST);
-      set(ws, r, COL.PV, {
-        formula: `SUMPRODUCT(${yRange},${dfRange})`,
-        style: STY.formula,
-      });
+      set(ws, r, COL.TOTAL, { formula: `SUM(${yRange})`, style: STY.formula });
 
-      // Right-margin note: the formula in plain text so the auditor can
-      // read it without clicking a cell. Truncated if very long.
+      // Right-margin note: the formula in plain text so the auditor can read
+      // it without clicking into the cell. Truncated if very long.
       if (grossSrc) {
-        const noteText = grossSrc.length > 90 ? grossSrc.slice(0, 87) + "…" : grossSrc;
-        set(ws, r, COL.NOTE, { value: noteText, style: STY.labelMuted });
+        const noteText = grossSrc.length > 88 ? grossSrc.slice(0, 85) + "…" : grossSrc;
+        set(ws, r, COL.NOTE, { value: `= ${noteText}`, style: STY.labelMuted });
       }
       r++;
     }
     const lastDataRow = r - 1;
+    const hasItems = lastDataRow >= firstDataRow;
 
-    // Subtotal row.
+    // Subtotal row. Guard the empty-block case so SUM() has a valid range.
     set(ws, r, COL.LABEL, { value: `Total ${title.toLowerCase()}`, style: STY.subtotalLabel });
     set(ws, r, COL.ID, { value: "", style: STY.subtotal });
     for (let y = 0; y < H; y++) {
-      const yRange = cellRange(firstDataRow, COL.YEAR_FIRST + y, lastDataRow, COL.YEAR_FIRST + y);
+      const colRange = cellRange(firstDataRow, COL.YEAR_FIRST + y, lastDataRow, COL.YEAR_FIRST + y);
       set(ws, r, COL.YEAR_FIRST + y, {
-        formula: `SUM(${yRange})`,
+        formula: hasItems ? `SUM(${colRange})` : "0",
         style: STY.subtotal,
       });
     }
     const totalRange = cellRange(firstDataRow, COL.TOTAL, lastDataRow, COL.TOTAL);
-    set(ws, r, COL.TOTAL, { formula: `SUM(${totalRange})`, style: STY.subtotal });
-    const pvRange = cellRange(firstDataRow, COL.PV, lastDataRow, COL.PV);
-    set(ws, r, COL.PV, { formula: `SUM(${pvRange})`, style: STY.subtotal });
+    set(ws, r, COL.TOTAL, { formula: hasItems ? `SUM(${totalRange})` : "0", style: STY.subtotal });
     set(ws, r, COL.NOTE, { value: "", style: STY.subtotal });
 
     const totalsRow = r;
@@ -601,62 +563,43 @@ function buildCashflowSheet(items, assumptions, model, A, horizon, projectName) 
   set(ws, r, COL.LABEL, { value: "NET CASHFLOW", style: STY.sectionHeader });
   r++;
 
-  // Net per year.
-  set(ws, r, COL.LABEL, { value: "Net per year", style: STY.labelBold });
+  // Net per period = total benefits − total costs.
+  set(ws, r, COL.LABEL, { value: `Net per ${unit.one}`, style: STY.labelBold });
   const netRow = r;
+  const netCellStyle = { font: { ...F11B, color: { rgb: "111111" } }, alignment: ALIGN_R, numFmt: FMT.money };
   for (let y = 0; y < H; y++) {
     const bCell = cellAddr(benefitsBlock.totalsRow, COL.YEAR_FIRST + y);
     const cCell = cellAddr(costsBlock.totalsRow, COL.YEAR_FIRST + y);
-    set(ws, r, COL.YEAR_FIRST + y, {
-      formula: `${bCell}-${cCell}`,
-      style: STY.formula,
-    });
+    set(ws, r, COL.YEAR_FIRST + y, { formula: `${bCell}-${cCell}`, style: netCellStyle });
   }
   set(ws, r, COL.TOTAL, {
     formula: `SUM(${cellRange(r, COL.YEAR_FIRST, r, COL.YEAR_LAST)})`,
-    style: STY.formula,
-  });
-  set(ws, r, COL.PV, {
-    formula: `SUMPRODUCT(${cellRange(r, COL.YEAR_FIRST, r, COL.YEAR_LAST)},${cellRange(discFactorRow, COL.YEAR_FIRST, discFactorRow, COL.YEAR_LAST)})`,
-    style: STY.formula,
+    style: STY.subtotal,
   });
   r++;
 
-  // Discounted net per year.
-  set(ws, r, COL.LABEL, { value: "Discounted net", style: STY.labelMuted });
-  const discNetRow = r;
-  for (let y = 0; y < H; y++) {
-    const netCell  = cellAddr(netRow, COL.YEAR_FIRST + y);
-    const dfCell   = cellAddr(discFactorRow, COL.YEAR_FIRST + y);
-    set(ws, r, COL.YEAR_FIRST + y, {
-      formula: `${netCell}*${dfCell}`,
-      style: STY.formulaMuted,
-    });
-  }
-  set(ws, r, COL.TOTAL, {
-    formula: `SUM(${cellRange(r, COL.YEAR_FIRST, r, COL.YEAR_LAST)})`,
-    style: STY.formulaMuted,
-  });
-  set(ws, r, COL.PV, { value: "", style: STY.formulaMuted });
-  r++;
-
-  // Cumulative discounted.
-  set(ws, r, COL.LABEL, { value: "Cumulative", style: STY.labelMuted });
+  // Cumulative net — the running total. Crosses zero at payback.
+  set(ws, r, COL.LABEL, { value: "Cumulative net", style: STY.labelMuted });
+  const cumRow = r;
   for (let y = 0; y < H; y++) {
     if (y === 0) {
       set(ws, r, COL.YEAR_FIRST + y, {
-        formula: cellAddr(discNetRow, COL.YEAR_FIRST + y),
+        formula: cellAddr(netRow, COL.YEAR_FIRST + y),
         style: STY.formulaMuted,
       });
     } else {
       const prev = cellAddr(r, COL.YEAR_FIRST + y - 1);
-      const cur  = cellAddr(discNetRow, COL.YEAR_FIRST + y);
+      const cur  = cellAddr(netRow, COL.YEAR_FIRST + y);
       set(ws, r, COL.YEAR_FIRST + y, {
         formula: `${prev}+${cur}`,
         style: STY.formulaMuted,
       });
     }
   }
+  set(ws, r, COL.NOTE, {
+    value: "Running total of net per period. Turns positive at payback.",
+    style: STY.labelMuted,
+  });
   r++;
   r++; // blank
 
@@ -665,39 +608,41 @@ function buildCashflowSheet(items, assumptions, model, A, horizon, projectName) 
   set(ws, r, COL.LABEL, { value: "SUMMARY METRICS", style: STY.sectionHeader });
   r++;
 
-  set(ws, r, COL.LABEL, { value: "Net present value (NPV)", style: STY.labelBold });
-  const npvCell = cellAddr(netRow, COL.PV);
-  set(ws, r, COL.YEAR_FIRST, { formula: npvCell, style: { ...STY.subtotal, numFmt: FMT.moneyHeadline } });
-  const summaryNpvRow = r;
+  // Net value = Total of the net-per-period row.
+  set(ws, r, COL.LABEL, { value: "Net value", style: STY.labelBold });
+  const netValueRef = cellAddr(netRow, COL.TOTAL);
+  set(ws, r, COL.YEAR_FIRST, { formula: netValueRef, style: { ...STY.subtotal, numFmt: FMT.moneyHeadline } });
+  const summaryNetRow = r;
   set(ws, r, COL.NOTE, {
-    value: "= PV of net cashflow row above.",
+    value: "= total benefits − total costs across the horizon (undiscounted).",
     style: STY.labelMuted,
   });
   r++;
 
-  set(ws, r, COL.LABEL, { value: "Benefit-cost ratio (BCR)", style: STY.labelBold });
-  const benefitsPvCell = cellAddr(benefitsBlock.totalsRow, COL.PV);
-  const costsPvCell = cellAddr(costsBlock.totalsRow, COL.PV);
+  set(ws, r, COL.LABEL, { value: "Return per $1 spent (BCR)", style: STY.labelBold });
+  const benefitsTotalCell = cellAddr(benefitsBlock.totalsRow, COL.TOTAL);
+  const costsTotalCell = cellAddr(costsBlock.totalsRow, COL.TOTAL);
   set(ws, r, COL.YEAR_FIRST, {
-    formula: `IFERROR(${benefitsPvCell}/${costsPvCell},0)`,
+    formula: `IFERROR(${benefitsTotalCell}/${costsTotalCell},0)`,
     style: { ...STY.subtotal, numFmt: FMT.ratio },
   });
   const summaryBcrRow = r;
   set(ws, r, COL.NOTE, {
-    value: `= ${benefitsPvCell} / ${costsPvCell}. Above 1.00× means benefits outweigh costs.`,
+    value: `= ${benefitsTotalCell} / ${costsTotalCell}. Above 1.00× means benefits outweigh costs.`,
     style: STY.labelMuted,
   });
   r++;
 
-  set(ws, r, COL.LABEL, { value: "Internal rate of return (IRR)", style: STY.labelBold });
-  const netRange = cellRange(netRow, COL.YEAR_FIRST, netRow, COL.YEAR_LAST);
+  // Payback = first period the cumulative-net row turns non-negative.
+  set(ws, r, COL.LABEL, { value: `Payback (${unit.many})`, style: STY.labelBold });
+  const cumRange = cellRange(cumRow, COL.YEAR_FIRST, cumRow, COL.YEAR_LAST);
   set(ws, r, COL.YEAR_FIRST, {
-    formula: `IFERROR(IRR(${netRange},0),0)`,
-    style: { ...STY.subtotal, numFmt: FMT.pct },
+    formula: `IF(MAX(${cumRange})<0,"—",IF(MIN(${cumRange})>=0,1,SUMPRODUCT(--(${cumRange}<0))+1))`,
+    style: { ...STY.subtotal, numFmt: FMT.int },
   });
-  const summaryIrrRow = r;
+  const summaryPaybackRow = r;
   set(ws, r, COL.NOTE, {
-    value: `= IRR of net per year. Shows 0% if no sign change.`,
+    value: `First ${unit.one} the cumulative-net row is ≥ 0. "—" = never within the horizon.`,
     style: STY.labelMuted,
   });
   r++;
@@ -708,31 +653,31 @@ function buildCashflowSheet(items, assumptions, model, A, horizon, projectName) 
   ws["!cols"][COL.LABEL]  = { wch: 38 };
   ws["!cols"][COL.ID]     = { wch: 22 };
   for (let y = 0; y < H; y++) ws["!cols"][COL.YEAR_FIRST + y] = { wch: 12 };
-  ws["!cols"][COL.TOTAL]  = { wch: 13 };
-  ws["!cols"][COL.PV]     = { wch: 13 };
-  ws["!cols"][COL.NOTE]   = { wch: 46 };
+  ws["!cols"][COL.TOTAL]  = { wch: 14 };
+  ws["!cols"][COL.NOTE]   = { wch: 52 };
 
   // Row heights (title row taller).
   ws["!rows"] = [{ hpt: 28 }];
 
-  // Freeze the title + parameters + period structure, plus the label column.
+  // Freeze the period-header row + the label/id columns so the grid scrolls
+  // under fixed period labels.
   ws["!views"] = [{
     state: "frozen",
-    xSplit: COL.YEAR_FIRST,           // freeze label + id columns
-    ySplit: yearHeaderRow + 3,        // freeze through discount-factor row
-    topLeftCell: cellAddr(yearHeaderRow + 3, COL.YEAR_FIRST),
+    xSplit: COL.YEAR_FIRST,
+    ySplit: yearHeaderRow + 1,
+    topLeftCell: cellAddr(yearHeaderRow + 1, COL.YEAR_FIRST),
     showGridLines: false,
-    activeCell: cellAddr(summaryNpvRow, COL.YEAR_FIRST),
+    activeCell: cellAddr(summaryNetRow, COL.YEAR_FIRST),
   }];
 
   return {
     ws,
     refs: {
-      npvCell:    cellAddr(summaryNpvRow, COL.YEAR_FIRST),
-      bcrCell:    cellAddr(summaryBcrRow, COL.YEAR_FIRST),
-      irrCell:    cellAddr(summaryIrrRow, COL.YEAR_FIRST),
-      benefitsPv: benefitsPvCell,
-      costsPv:    costsPvCell,
+      netValueCell: cellAddr(summaryNetRow, COL.YEAR_FIRST),
+      bcrCell:      cellAddr(summaryBcrRow, COL.YEAR_FIRST),
+      paybackCell:  cellAddr(summaryPaybackRow, COL.YEAR_FIRST),
+      benefitsTotalCell,
+      costsTotalCell,
       netRowFirstYear: cellAddr(netRow, COL.YEAR_FIRST),
       netRowLastYear:  cellAddr(netRow, COL.YEAR_LAST),
       benefitsTotalRow: benefitsBlock.totalsRow,
@@ -745,7 +690,7 @@ function buildCashflowSheet(items, assumptions, model, A, horizon, projectName) 
 // Sheet: Cover — title page + headline outputs + legend + how-to.
 // ---------------------------------------------------------------------------
 function buildCoverSheet({
-  projectName, projectDescription, today,
+  projectName, projectDescription, today, horizon,
   refs,
 }) {
   const ws = {};
@@ -767,38 +712,38 @@ function buildCoverSheet({
   r++;
   r++; // blank
 
-  // NPV (big headline).
-  set(ws, r, COL.LABEL, { value: "Net present value (NPV)", style: STY.headlineLabel });
+  // Net value (big headline).
+  set(ws, r, COL.LABEL, { value: "Net value", style: STY.headlineLabel });
   set(ws, r, COL.VALUE, {
-    formula: `Cashflow!${refs.npvCell}`,
+    formula: `Cashflow!${refs.netValueCell}`,
     style: STY.headline,
   });
   set(ws, r, COL.NOTE, {
-    value: "Sum of discounted net cashflows over the horizon.",
+    value: "Total benefits − total costs over the horizon (undiscounted nominal cashflow).",
     style: STY.note,
   });
   r++;
 
   // BCR.
-  set(ws, r, COL.LABEL, { value: "Benefit-cost ratio (BCR)", style: STY.label });
+  set(ws, r, COL.LABEL, { value: "Return per $1 spent (BCR)", style: STY.label });
   set(ws, r, COL.VALUE, {
     formula: `Cashflow!${refs.bcrCell}`,
     style: { ...STY.link, numFmt: FMT.ratio },
   });
   set(ws, r, COL.NOTE, {
-    value: "PV(benefits) ÷ PV(costs). Above 1.00× means benefits outweigh costs.",
+    value: "Total benefits ÷ total costs. Above 1.00× means benefits outweigh costs.",
     style: STY.note,
   });
   r++;
 
-  // IRR.
-  set(ws, r, COL.LABEL, { value: "Internal rate of return (IRR)", style: STY.label });
+  // Payback.
+  set(ws, r, COL.LABEL, { value: "Payback (periods)", style: STY.label });
   set(ws, r, COL.VALUE, {
-    formula: `Cashflow!${refs.irrCell}`,
-    style: { ...STY.link, numFmt: FMT.pct },
+    formula: `Cashflow!${refs.paybackCell}`,
+    style: { ...STY.link, numFmt: FMT.int },
   });
   set(ws, r, COL.NOTE, {
-    value: "Discount rate at which NPV would equal zero.",
+    value: "Periods until cumulative net cashflow first turns positive.",
     style: STY.note,
   });
   r++;
@@ -809,9 +754,9 @@ function buildCoverSheet({
   set(ws, r, COL.LABEL, { value: "BASIS", style: STY.sectionHeader });
   r++;
   r++;
-  set(ws, r, COL.LABEL, { value: "Discount rate", style: STY.label });
-  set(ws, r, COL.VALUE, { formula: "discount_rate", style: STY.linkPct });
-  set(ws, r, COL.NOTE,  { value: "Linked from Assumptions sheet.", style: STY.labelMuted });
+  set(ws, r, COL.LABEL, { value: "Horizon (periods)", style: STY.label });
+  set(ws, r, COL.VALUE, { value: horizon, style: STY.labelMuted });
+  set(ws, r, COL.NOTE,  { value: "Undiscounted nominal cashflow — every period weighted equally.", style: STY.labelMuted });
   r++;
   set(ws, r, COL.LABEL, { value: "Generated", style: STY.label });
   set(ws, r, COL.VALUE, { value: today, style: STY.labelMuted });
@@ -899,14 +844,6 @@ function exportXlsx({
     alert("Excel export library failed to load. Check your network and refresh.");
     return;
   }
-  // TODO(wave-4): the Excel export still references the pre-Wave-4 schema
-  // (discount_rate, NPV, IRR, startYear). Disabled until rewritten so it
-  // doesn't generate a half-correct file.
-  alert("Excel export is temporarily disabled — Wave 4 removed the discount-rate model and the exporter hasn't been updated yet.");
-  return;
-  // eslint-disable-next-line no-unreachable
-  // The body below is preserved for the rewrite. Restore it once the new
-  // granularity/startPeriod schema has a matching XLSX layout.
   const wb = XLSX.utils.book_new();
 
   // Build sheets in order of cross-reference dependency: Cashflow needs the
@@ -924,6 +861,7 @@ function exportXlsx({
     projectName: projectShortName || projectName,
     projectDescription,
     today,
+    horizon,
     refs: cashRefs,
   });
 
@@ -949,9 +887,9 @@ function exportXlsx({
       Ref: `Assumptions!$C$${rowNum}`,
     });
   }
-  wb.Workbook.Names.push({ Name: "npv", Ref: `Cashflow!${cashRefs.npvCell}` });
+  wb.Workbook.Names.push({ Name: "net_value", Ref: `Cashflow!${cashRefs.netValueCell}` });
   wb.Workbook.Names.push({ Name: "bcr", Ref: `Cashflow!${cashRefs.bcrCell}` });
-  wb.Workbook.Names.push({ Name: "irr", Ref: `Cashflow!${cashRefs.irrCell}` });
+  wb.Workbook.Names.push({ Name: "payback", Ref: `Cashflow!${cashRefs.paybackCell}` });
 
   // Hide the workbook-level gridlines on every sheet (per-sheet flag set
   // above; the Workbook.Views array reinforces it for some viewers).

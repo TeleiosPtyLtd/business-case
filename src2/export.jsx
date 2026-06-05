@@ -177,20 +177,18 @@ const PrintRule = () => (
 const pdMoney = (v) => fmtMoney((typeof niceRound === "function" ? niceRound(v) : v), { exact: true });
 
 const PrintReport = ({ project, model, items, assumptions, A, horizon }) => {
-  // TODO(wave-4): the print/PDF report references the pre-Wave-4 schema
-  // (NPV, BCR, IRR, discount_rate). Suppress the render until rewritten
-  // so the page doesn't crash on load. The Save-as-PDF button still
-  // works — it just produces an empty document for now.
-  return null;
-  // eslint-disable-next-line no-unreachable
+  // The handout mirrors the Wave-4 model: undiscounted nominal cashflow,
+  // costs vs benefits, net, payback. No NPV/IRR/discounting — those left
+  // the engine in Wave-4, so the report speaks in plain net-value terms.
+  const unit = periodUnit(GRANULARITY);
   const benefitsRanked = React.useMemo(() => items
     .filter(i => i.kind === "benefit")
-    .map(i => ({ i, pv: model.perItem[i.id].cashPV }))
+    .map(i => ({ i, pv: model.perItem[i.id].total }))
     .sort((a, b) => b.pv - a.pv),
     [items, model]);
   const costsRanked = React.useMemo(() => items
     .filter(i => i.kind === "cost")
-    .map(i => ({ i, pv: model.perItem[i.id].cashPV }))
+    .map(i => ({ i, pv: model.perItem[i.id].total }))
     .sort((a, b) => b.pv - a.pv),
     [items, model]);
   const topBenefit = benefitsRanked[0];
@@ -237,19 +235,23 @@ const PrintReport = ({ project, model, items, assumptions, A, horizon }) => {
       world:  attribute(world,  worldSum),
     };
   }, [items, A, assumptions]);
-  const npvPositive = model.npv >= 0;
-  const bcrOk       = model.bcr >= 1;
+  const net = model.net;
+  const netPositive = net >= 0;
+  // Undiscounted benefit-cost ratio. Guard the zero-cost case so a
+  // costless project reads as "—" rather than Infinity×.
+  const bcr = model.totalCosts > 0 ? model.totalBenefits / model.totalCosts : null;
+  const bcrOk = bcr != null && bcr >= 1;
   const today = new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 
-  // Net cashflow series for the year-by-year view.
-  const netSeries = React.useMemo(() => {
-    const series = model.yearTotals.benefit.map((b, y) => b - model.yearTotals.cost[y]);
-    const cum = series.reduce((acc, v, i) => {
-      acc.push((acc[i - 1] || 0) + v);
-      return acc;
-    }, []);
-    return { yearly: series, cumulative: cum };
-  }, [model]);
+  // Net per period + running total, taken straight off the payback engine
+  // so the chart, the table, and the payback headline can't drift apart.
+  const pay = React.useMemo(() => computePayback(items, A), [items, A]);
+  const netSeries = { yearly: pay.periodly, cumulative: pay.cumulative };
+  const paybackLabel = pay.paybackPeriod == null
+    ? `Beyond ${timelineLabel(horizon, GRANULARITY)}`
+    : pay.paybackPeriod <= 0
+      ? "Immediate"
+      : `${(Math.ceil(pay.paybackPeriod * 10) / 10).toFixed(1)} ${unit.many}`;
 
   // -- shared cell styles -----------------------------------------------
   const cellTh = {
@@ -282,9 +284,8 @@ const PrintReport = ({ project, model, items, assumptions, A, horizon }) => {
         fontFamily: P.serif, fontStyle: "italic", color: P.ink2,
         fontSize: 13.5, lineHeight: 1.5, margin: "0 0 8mm", maxWidth: "170mm",
       }}>
-        Modelled across {horizon} years.
-        Over that period the project's value to the business is <strong style={{ color: npvPositive ? P.green : P.red, fontStyle: "normal" }}>{pdMoney(model.npv)}</strong>{" "}
-        — every $1 spent comes back as <strong style={{ fontStyle: "normal" }}>${model.bcr.toFixed(2)}</strong>.
+        Modelled across {timelineLabel(horizon, GRANULARITY)}.
+        Over that span the project's net value to the business is <strong style={{ color: netPositive ? P.green : P.red, fontStyle: "normal" }}>{pdMoney(net)}</strong>{bcr != null && (<>{" "}— every $1 spent comes back as <strong style={{ fontStyle: "normal" }}>${bcr.toFixed(2)}</strong></>)}.
         These are estimates from explicit assumptions; mark up anything that looks wrong.
       </p>
 
@@ -297,21 +298,21 @@ const PrintReport = ({ project, model, items, assumptions, A, horizon }) => {
       }}>
         <StatBox
           label="Net value created"
-          hint={`Over ${horizon} years (net present value)`}
-          value={pdMoney(model.npv)}
-          color={npvPositive ? P.green : P.red}
+          hint={`Benefits minus costs over ${timelineLabel(horizon, GRANULARITY)}`}
+          value={pdMoney(net)}
+          color={netPositive ? P.green : P.red}
         />
         <StatBox
           label="Return per $1 spent"
-          hint="Benefit-cost ratio"
-          value={`${model.bcr.toFixed(2)}×`}
+          hint="Total benefits ÷ total costs"
+          value={bcr == null ? "—" : `${bcr.toFixed(2)}×`}
           color={bcrOk ? P.green : P.red}
         />
         <StatBox
-          label="Annual rate of return"
-          hint="Internal rate of return"
-          value={irrValue == null ? "—" : fmtPct(irrValue)}
-          color={P.ink}
+          label="Payback"
+          hint="When cumulative cashflow turns positive"
+          value={paybackLabel}
+          color={pay.paybackPeriod == null ? P.red : P.ink}
         />
       </div>
 
@@ -328,7 +329,7 @@ const PrintReport = ({ project, model, items, assumptions, A, horizon }) => {
         <div style={{
           marginTop: 6, fontFamily: P.mono, fontSize: 9, color: P.muted,
         }}>
-          {horizon} years modelled · {A.discount_rate > 0 ? `${A.discount_rate}% yearly discount` : "no time discounting"} · generated {today}
+          {timelineLabel(horizon, GRANULARITY)} modelled · nominal cashflow, no time discounting · generated {today}
         </div>
       </div>
 
@@ -348,11 +349,11 @@ const PrintReport = ({ project, model, items, assumptions, A, horizon }) => {
   const PageWeighed = (
     <section className="print-page" style={{ fontFamily: P.sans, color: P.ink }}>
       <PageHeader project={project} section="Costs and benefits" />
-      <SectionHeader title="What's being weighed" sub={`What this project spends versus what it brings back, totalled across ${horizon} years. Each side ranked by contribution.`} />
+      <SectionHeader title="What's being weighed" sub={`What this project spends versus what it brings back, totalled across ${timelineLabel(horizon, GRANULARITY)}. Each side ranked by contribution.`} />
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10mm", marginTop: "6mm" }}>
-        <ItemColumn title="Costs" total={model.totalCostsPV} accent={P.red} list={costsRanked} model={model} />
-        <ItemColumn title="Benefits" total={model.totalBenefitsPV} accent={P.green} list={benefitsRanked} model={model} />
+        <ItemColumn title="Costs" total={model.totalCosts} accent={P.red} list={costsRanked} model={model} />
+        <ItemColumn title="Benefits" total={model.totalBenefits} accent={P.green} list={benefitsRanked} model={model} />
       </div>
 
       {topBenefit && (
@@ -377,35 +378,35 @@ const PrintReport = ({ project, model, items, assumptions, A, horizon }) => {
   // ====================================================================
   const PageCashflow = (
     <section className="print-page" style={{ fontFamily: P.sans, color: P.ink }}>
-      <PageHeader project={project} section="Year-by-year" />
-      <SectionHeader title="When the value lands" sub="Each year's value in and out, plus the running total. Setup costs hit upfront so the first year is usually negative; benefits compound across later years." />
+      <PageHeader project={project} section={`${unit.one.charAt(0).toUpperCase()}${unit.one.slice(1)}-by-${unit.one}`} />
+      <SectionHeader title="When the value lands" sub={`Each ${unit.one}'s value in and out, plus the running total. Setup costs hit upfront so the first ${unit.one} is usually negative; benefits compound across later ${unit.many}.`} />
 
       <div style={{ marginTop: "6mm" }}>
-        <CashflowChart yearly={netSeries.yearly} cumulative={netSeries.cumulative} />
+        <CashflowChart yearly={netSeries.yearly} cumulative={netSeries.cumulative} unit={unit} />
       </div>
 
       <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "6mm" }}>
         <thead><tr>
-          <th style={cellTh}>Year</th>
+          <th style={cellTh}>{unit.one.charAt(0).toUpperCase()}{unit.one.slice(1)}</th>
           {netSeries.yearly.map((_, y) => (
-            <th key={y} style={{ ...cellTh, textAlign: "right" }}>Y{y + 1}</th>
+            <th key={y} style={{ ...cellTh, textAlign: "right" }}>{unit.short}{y + 1}</th>
           ))}
           <th style={{ ...cellTh, textAlign: "right" }}>Total</th>
         </tr></thead>
         <tbody>
           <tr>
             <td style={{ ...cellTd, color: P.muted, fontSize: 9.5 }}>Benefits</td>
-            {model.yearTotals.benefit.map((v, y) => (
+            {model.periodTotals.benefit.map((v, y) => (
               <td key={y} style={cellTdMono}>{pdMoney(v)}</td>
             ))}
-            <td style={cellTdMono}>{pdMoney(model.yearTotals.benefit.reduce((a, b) => a + b, 0))}</td>
+            <td style={cellTdMono}>{pdMoney(model.periodTotals.benefit.reduce((a, b) => a + b, 0))}</td>
           </tr>
           <tr>
             <td style={{ ...cellTd, color: P.muted, fontSize: 9.5 }}>Costs</td>
-            {model.yearTotals.cost.map((v, y) => (
+            {model.periodTotals.cost.map((v, y) => (
               <td key={y} style={{ ...cellTdMono, color: P.red }}>{v > 0 ? "−" : ""}{pdMoney(v)}</td>
             ))}
-            <td style={{ ...cellTdMono, color: P.red }}>−{pdMoney(model.yearTotals.cost.reduce((a, b) => a + b, 0))}</td>
+            <td style={{ ...cellTdMono, color: P.red }}>−{pdMoney(model.periodTotals.cost.reduce((a, b) => a + b, 0))}</td>
           </tr>
           <tr>
             <td style={{ ...cellTd, fontWeight: 500 }}>Net</td>
@@ -718,7 +719,8 @@ const PageHeader = ({ project, section }) => (
 
 // Tiny SVG cashflow chart for the print report. Net per year as bars
 // (green positive / red negative) and cumulative as a thin overlay line.
-const CashflowChart = ({ yearly, cumulative }) => {
+const CashflowChart = ({ yearly, cumulative, unit }) => {
+  const U = unit || { short: "Y", one: "year" };
   const W = 720, H = 220, padL = 50, padR = 24, padT = 18, padB = 28;
   const innerW = W - padL - padR, innerH = H - padT - padB;
   const N = yearly.length;
@@ -770,7 +772,7 @@ const CashflowChart = ({ yearly, cumulative }) => {
             <rect x={cx - barW / 2} y={top} width={barW} height={Math.max(bottom - top, 1)}
                   fill={v >= 0 ? P.green : P.red} opacity="0.65" />
             <text x={cx} y={H - 10} fontSize="9" fill={P.muted}
-                  fontFamily={P.sans} textAnchor="middle">Y{i + 1}</text>
+                  fontFamily={P.sans} textAnchor="middle">{U.short}{i + 1}</text>
           </g>
         );
       })}
@@ -783,7 +785,7 @@ const CashflowChart = ({ yearly, cumulative }) => {
       {/* Small legend */}
       <g transform={`translate(${padL}, 8)`}>
         <rect x="0" y="-7" width="10" height="8" fill={P.green} opacity="0.65" />
-        <text x="14" y="0" fontSize="8.5" fill={P.muted} fontFamily={P.sans}>Net per year</text>
+        <text x="14" y="0" fontSize="8.5" fill={P.muted} fontFamily={P.sans}>Net per {U.one}</text>
         <line x1="92" y1="-3" x2="108" y2="-3" stroke={P.ink} strokeWidth="1.4" />
         <circle cx="100" cy="-3" r="2.5" fill={P.ink} />
         <text x="112" y="0" fontSize="8.5" fill={P.muted} fontFamily={P.sans}>Cumulative</text>
