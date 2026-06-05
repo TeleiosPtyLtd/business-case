@@ -169,7 +169,15 @@ const ShareModal = ({ snapshot, onClose, existingShare: existingShareProp, onSha
   // share (token expired / rejected) — the share still succeeds, anonymously.
   const [attribWarning, setAttribWarning] = React.useState(false);
 
+  // Change-viewer-password sub-flow (update mode only).
+  const [pwOpen, setPwOpen]         = React.useState(false);
+  const [newPw, setNewPw]           = React.useState("");
+  const [newPwConfirm, setNewPwConf]= React.useState("");
+  const [pwStatus, setPwStatus]     = React.useState("idle"); // idle | saving | done | error
+  const [pwError, setPwError]       = React.useState(null);
+
   const canCreate = password.length >= 4 && password === confirm && status !== "uploading";
+  const canChangePw = newPw.length >= 4 && newPw === newPwConfirm && pwStatus !== "saving";
 
   // Pull the stats block whenever the modal opens in update mode and
   // again after a successful update (so freshly-edited timestamps
@@ -272,17 +280,11 @@ const ShareModal = ({ snapshot, onClose, existingShare: existingShareProp, onSha
     setError(null);
     try {
       const baseUrl = SHARE_ENDPOINT.replace(/\/$/, "");
-      let authHeader = {};
-      if (session.user) {
-        try {
-          const token = await session.getFreshToken();
-          if (token) authHeader = { "Authorization": `Bearer ${token}` };
-        } catch {}
-      }
+      const { authHeader, body } = await ownerAuth({ snapshot });
       const res = await fetch(`${baseUrl}/${encodeURIComponent(existingShare.id)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...authHeader },
-        body: JSON.stringify({ ownerToken: existingShare.ownerToken, snapshot }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
@@ -307,6 +309,48 @@ const ShareModal = ({ snapshot, onClose, existingShare: existingShareProp, onSha
   const copy = async () => {
     try { await navigator.clipboard.writeText(shareUrl); setCopied(true); setTimeout(() => setCopied(false), 1600); }
     catch {}
+  };
+
+  // Auth for owner-only operations (update / change password). The owner
+  // token alone authorizes, so prefer it — no sign-in popup. Only when
+  // there's no owner token (a share owned purely via account) do we fetch a
+  // fresh JWT, which may briefly pop the sign-in window.
+  const ownerAuth = async (extraBody = {}) => {
+    if (existingShare?.ownerToken) {
+      return { authHeader: {}, body: { ...extraBody, ownerToken: existingShare.ownerToken } };
+    }
+    let authHeader = {};
+    if (session.user) {
+      try { const t = await session.getFreshToken(); if (t) authHeader = { "Authorization": `Bearer ${t}` }; }
+      catch {}
+    }
+    return { authHeader, body: { ...extraBody } };
+  };
+
+  // Rotate the viewer password on an existing share. Owner-only — uses the
+  // stored owner token, falling back to the signed-in session.
+  const changePassword = async () => {
+    if (!canChangePw) return;
+    setPwStatus("saving");
+    setPwError(null);
+    try {
+      const baseUrl = SHARE_ENDPOINT.replace(/\/$/, "");
+      const { authHeader, body } = await ownerAuth({ newPassword: newPw });
+      const res = await fetch(`${baseUrl}/${encodeURIComponent(existingShare.id)}/password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeader },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`);
+      }
+      setPwStatus("done");
+      setNewPw(""); setNewPwConf("");
+    } catch (e) {
+      setPwError(e.message || "Couldn't change the password");
+      setPwStatus("error");
+    }
   };
 
   // -- Render states --
@@ -404,6 +448,47 @@ const ShareModal = ({ snapshot, onClose, existingShare: existingShareProp, onSha
               color: "var(--green-deep)", fontSize: 12.5,
             }}>Updated.</div>
           )}
+
+          {/* Change viewer password — collapsed by default */}
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px dashed var(--line)" }}>
+            {!pwOpen ? (
+              <button
+                onClick={() => { setPwOpen(true); setPwStatus("idle"); setPwError(null); }}
+                style={ghostBtnStyle}
+              >Change viewer password</button>
+            ) : (
+              <div>
+                <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10, lineHeight: 1.5 }}>
+                  Set a new password for viewers. The current password stops working
+                  immediately — anyone you've already shared the link with will need the new one.
+                </div>
+                <Field label="New password">
+                  <input type="password" value={newPw} onChange={e => setNewPw(e.target.value)}
+                    placeholder="At least 4 characters" autoFocus style={inputStyle} />
+                </Field>
+                <Field label="Confirm new password">
+                  <input type="password" value={newPwConfirm} onChange={e => setNewPwConf(e.target.value)}
+                    style={inputStyle} />
+                </Field>
+                {pwError && <ErrorBox text={pwError} />}
+                {pwStatus === "done" && (
+                  <div style={{
+                    marginTop: 8, padding: "8px 12px", borderRadius: 8,
+                    background: "color-mix(in srgb, var(--green) 12%, transparent)",
+                    color: "var(--green-deep)", fontSize: 12.5,
+                  }}>Password changed. Viewers will need the new one.</div>
+                )}
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+                  <button onClick={() => { setPwOpen(false); setNewPw(""); setNewPwConf(""); setPwError(null); setPwStatus("idle"); }}
+                    style={secondaryBtnStyle}>Cancel</button>
+                  <button onClick={changePassword} disabled={!canChangePw} style={primaryBtnStyle(canChangePw)}>
+                    {pwStatus === "saving" ? "Saving…" : "Set new password"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18 }}>
             <button onClick={() => { setMode("create"); setError(null); }} style={ghostBtnStyle}>
               Share as new (new URL)
