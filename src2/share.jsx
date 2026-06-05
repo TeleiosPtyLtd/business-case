@@ -737,12 +737,30 @@ const primaryBtnStyle = (enabled) => ({
 
 // Build a self-contained snapshot of the current model. The snapshot is what
 // gets uploaded to the backend and replayed on the viewer side.
-const buildSnapshot = ({ items, assumptionsEff, overrides }) => ({
+const buildSnapshot = ({ items, assumptionsEff, overrides }) => {
+  // Precompute a headline so the /mine portfolio dashboard can show & sort by
+  // net value without re-running the engine server-side. Best-effort; the
+  // viewer ignores it and recomputes from items/assumptions.
+  let headline = null;
+  try {
+    const A = {};
+    for (const a of assumptionsEff) A[a.id] = a.value;
+    const m = computeModel(items, A);
+    const pay = (typeof computePayback === "function") ? computePayback(items, A) : null;
+    headline = {
+      net: m.net, totalBenefits: m.totalBenefits, totalCosts: m.totalCosts,
+      bcr: m.totalCosts > 0 ? m.totalBenefits / m.totalCosts : null,
+      paybackPeriod: pay ? pay.paybackPeriod : null,
+      horizon: window.HORIZON, granularity: window.GRANULARITY || "year",
+    };
+  } catch (e) { /* headline is best-effort */ }
+  return {
   version: 1,
   generatedAt: new Date().toISOString(),
   meta: window.PROJECT_META,
   granularity: window.GRANULARITY || "year",
   horizon: window.HORIZON,
+  headline,
   // Serialize each item with a formula STRING so the viewer can recompile.
   // Order of preference for the formula source:
   //   1. item._grossSrc  - wizard-created or rehydrated items already have this
@@ -765,6 +783,7 @@ const buildSnapshot = ({ items, assumptionsEff, overrides }) => ({
   // "Let's proceed" button falls back to its standalone placement.
   baseline: (window.PROJECT_CONFIG && window.PROJECT_CONFIG.baseline) || [],
   overrides,
-});
+  };
+};
 
 Object.assign(window, { ShareModal, buildSnapshot, useTeleiosSession });
