@@ -1,16 +1,29 @@
 // App entry — wires assumptions, items, and tabs.
 // PROJECT_META comes from src2/project.config.js via model.jsx.
 
-// Per-URL localStorage key. Viewer mode uses the share id; author mode falls
-// back to the project shortName so different local projects don't collide.
+// Hosted owner-editor context. edit.html sets window.CBAGENT_EDIT_SHARE =
+// { id, url } after loading an owned case's snapshot. When present, the
+// studio runs in edit-mode: it's bound to that share id and offers a
+// "Save changes" button that pushes back to the server.
+const EDIT_SHARE = (typeof window !== "undefined" && window.CBAGENT_EDIT_SHARE) || null;
+const EDIT_MODE  = !!EDIT_SHARE;
+
+// Per-URL localStorage key. Viewer mode uses the share id; the hosted editor
+// keys by share id too; author mode falls back to the project shortName so
+// different local projects don't collide.
 const STATE_KEY = (() => {
-  const m = (window.location.pathname || "").match(/^\/view\/([^/]+)/);
-  if (m) return `cbagent.state.view.${m[1]}`;
+  const mv = (window.location.pathname || "").match(/^\/view\/([^/]+)/);
+  if (mv) return `cbagent.state.view.${mv[1]}`;
+  const me = (window.location.pathname || "").match(/^\/edit\/([^/]+)/);
+  if (me) return `cbagent.state.edit.${me[1]}`;
   const slug = (PROJECT_META.shortName || "default").replace(/[^A-Za-z0-9_-]/g, "_");
   return `cbagent.state.author.${slug}`;
 })();
 
 function loadPersistedState() {
+  // The hosted editor always starts from the server snapshot — never rehydrate
+  // stale local edits over what's stored on the server.
+  if (EDIT_MODE) return null;
   try {
     const raw = localStorage.getItem(STATE_KEY);
     if (!raw) return null;
@@ -160,7 +173,13 @@ const App = () => {
   }, []);
   const [editingAssumption, setEditingAssumption] = React.useState(null);
   const [shareOpen, setShareOpen] = React.useState(false);
-  const [share, setShare] = React.useState(() => __persisted?.share || null);
+  // In the hosted editor, bind to the case being edited so the Share modal
+  // opens in "update" mode (and password/tag management is available).
+  const [share, setShare] = React.useState(() =>
+    EDIT_SHARE ? { id: EDIT_SHARE.id, url: EDIT_SHARE.url } : (__persisted?.share || null));
+  // Hosted editor: server-save state for the topbar "Save changes" button.
+  const [serverSave, setServerSave] = React.useState("idle"); // idle|saving|saved|error
+  const [serverSaveErr, setServerSaveErr] = React.useState(null);
   const [selectedItemId, setSelectedItemId] = React.useState(() => __persisted?.selectedItemId || null);
   const [hoveredItemId, setHoveredItemId] = React.useState(null); // transient — not persisted
   const [sortBySensitivity, setSortBySensitivity] = React.useState(() => !!__persisted?.sortBySensitivity);
@@ -404,6 +423,34 @@ const App = () => {
 
   const project = { name: PROJECT_META.shortName };
 
+  // Hosted editor: push the current model back to the server (PUT the share),
+  // authorized by the signed-in account's JWT. Same effect as the Share
+  // modal's "Update share", surfaced as a one-click topbar button.
+  const saveToServer = React.useCallback(async () => {
+    if (!EDIT_SHARE) return;
+    setServerSave("saving");
+    setServerSaveErr(null);
+    try {
+      const snap = buildSnapshot({ items: adjustedItems, assumptionsEff, overrides });
+      const token = await session.getFreshToken();
+      if (!token) throw new Error("Not signed in — refresh and sign in again.");
+      const res = await fetch(`/api/share/${encodeURIComponent(EDIT_SHARE.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ snapshot: snap }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`${res.status}${text ? ` — ${text}` : ""}`);
+      }
+      setServerSave("saved");
+      setTimeout(() => setServerSave(s => (s === "saved" ? "idle" : s)), 2500);
+    } catch (e) {
+      setServerSaveErr(e.message || "Save failed");
+      setServerSave("error");
+    }
+  }, [adjustedItems, assumptionsEff, overrides, session]);
+
   return (
     <>
     <div className="no-print page-shell" style={{ minHeight: "100vh" }}>
@@ -430,7 +477,15 @@ const App = () => {
             }}>{PROJECT_META.name}</h1>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10 }}>
-            <SaveIndicator state={saveState} />
+            {!EDIT_MODE && <SaveIndicator state={saveState} />}
+            {EDIT_MODE && !isMobile && (
+              <SaveChangesButton
+                state={serverSave}
+                error={serverSaveErr}
+                onSave={saveToServer}
+                viewUrl={EDIT_SHARE.url}
+              />
+            )}
             <ThemeToggle theme={theme} setTheme={setTheme} />
             {(READ_ONLY || isMobile) && (
               <span style={{
@@ -724,6 +779,36 @@ const SaveIndicator = ({ state }) => {
         transition: "background 200ms",
       }} />
       {isSaving ? "Saving" : "Saved"}
+    </span>
+  );
+};
+
+// Hosted-editor topbar action: push the model back to the server. The
+// primary affordance for "edit your own case on models.teleios.au".
+const SaveChangesButton = ({ state, error, onSave, viewUrl }) => {
+  const saving = state === "saving";
+  const saved  = state === "saved";
+  const label  = saving ? "Saving…" : saved ? "Saved ✓" : state === "error" ? "Retry save" : "Save changes";
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+      {viewUrl && (
+        <a href={viewUrl} target="_blank" rel="noopener" title="Open the recipient (password) view"
+          style={{ fontSize: 12, color: "var(--muted)", textDecoration: "underline", whiteSpace: "nowrap" }}>
+          View ↗
+        </a>
+      )}
+      <button
+        onClick={onSave}
+        disabled={saving}
+        title={error || "Save changes back to the shared case"}
+        style={{
+          border: `1px solid ${saved ? "var(--green-deep)" : "var(--ink)"}`,
+          background: saving ? "var(--line-strong)" : saved ? "var(--green)" : "var(--ink)",
+          color: saving ? "var(--muted-2)" : "var(--bg)",
+          padding: "8px 16px", borderRadius: 999, fontSize: 13, fontWeight: 600,
+          cursor: saving ? "wait" : "pointer", whiteSpace: "nowrap",
+        }}
+      >{label}</button>
     </span>
   );
 };

@@ -77,39 +77,62 @@ const popupSignIn = () => new Promise((resolve, reject) => {
 
 // React hook exposing the current session + sign in/out + a token getter
 // that guarantees freshness. `user` is null when signed out.
+//
+// Two backends, picked by environment:
+//   • Hosted teleios.au pages (the dashboard, the hosted editor) load
+//     Clerk natively as window.Clerk — production Clerk runs fine on a real
+//     teleios.au origin. We use it directly: no popup, tokens straight from
+//     Clerk.session.getToken().
+//   • The localhost studio has no native Clerk (it can't — Clerk rejects
+//     localhost origins), so it falls back to the popup + localStorage
+//     handshake against auth.teleios.au.
+// window.Clerk presence is fixed for a page's lifetime, so the hooks below
+// run consistently every render.
 const useTeleiosSession = () => {
+  const nativeClerk = (typeof window !== "undefined" && window.Clerk) || null;
+
+  // Popup-model state (localhost studio).
   const [session, setSession] = React.useState(() => readSession());
+  // Native-Clerk re-render tick (fires on sign in/out/token refresh).
+  const [, forceTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!nativeClerk || !nativeClerk.addListener) return;
+    const unsub = nativeClerk.addListener(() => forceTick(t => t + 1));
+    return () => { unsub && unsub(); };
+  }, [nativeClerk]);
 
-  const signIn = React.useCallback(async () => {
-    const s = await popupSignIn();
-    writeSession(s);
-    setSession(s);
-    return s;
+  const signInPopup = React.useCallback(async () => {
+    const s = await popupSignIn(); writeSession(s); setSession(s); return s;
   }, []);
-
-  const signOut = React.useCallback(() => {
-    clearStoredSession();
-    setSession(null);
+  const signOutPopup = React.useCallback(() => {
+    clearStoredSession(); setSession(null);
   }, []);
-
-  // Returns a fresh bearer token, re-running the popup if the stored one
-  // is stale. Re-run is silent when the Clerk session on teleios.au is
-  // still valid. Returns null only when there is no session at all.
-  const getFreshToken = React.useCallback(async () => {
+  const getFreshPopup = React.useCallback(async () => {
     const cur = readSession();
     if (cur && Date.now() - cur.ts < TOKEN_FRESH_MS) return cur.token;
     if (!cur) return null; // never signed in → caller shares anonymously
-    const s = await popupSignIn();
-    writeSession(s);
-    setSession(s);
-    return s.token;
+    const s = await popupSignIn(); writeSession(s); setSession(s); return s.token;
   }, []);
 
+  if (nativeClerk) {
+    const u = nativeClerk.user;
+    return {
+      user: u
+        ? { email: (u.primaryEmailAddress && u.primaryEmailAddress.emailAddress) || u.username || null, userId: u.id }
+        : null,
+      signIn:  async () => { if (nativeClerk.openSignIn) nativeClerk.openSignIn({}); },
+      signOut: () => { try { nativeClerk.signOut(); } catch {} },
+      getFreshToken: async () => {
+        try { return nativeClerk.session ? await nativeClerk.session.getToken() : null; }
+        catch { return null; }
+      },
+    };
+  }
   return {
     user: session ? { email: session.email, userId: session.userId } : null,
-    signIn,
-    signOut,
-    getFreshToken,
+    signIn:  signInPopup,
+    signOut: signOutPopup,
+    getFreshToken: getFreshPopup,
   };
 };
 
@@ -269,10 +292,12 @@ const ShareModal = ({ snapshot, onClose, existingShare: existingShareProp, onSha
     }
   };
 
-  // Push an update to an existing share using the stored ownerToken.
+  // Push an update to an existing share. Authorized by the stored owner
+  // token, or — when there's none (e.g. the hosted editor) — by the
+  // signed-in account via ownerAuth's JWT fallback.
   const update = async () => {
-    if (!existingShare?.ownerToken) {
-      setError("No owner token stored. Use 'Share as new' instead.");
+    if (!existingShare?.ownerToken && !session.user) {
+      setError("No owner token stored, and not signed in. Use 'Share as new' instead.");
       setStatus("error");
       return;
     }
