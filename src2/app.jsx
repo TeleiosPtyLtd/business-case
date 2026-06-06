@@ -6524,23 +6524,21 @@ const MinimalLanding = (props) => {
           ? window.PROJECT_CONFIG.risks : [];
         if (allRisks.length === 0) return null;
 
-        // Filter to risks relevant to the scope-1 case: those whose
-        // threatened assumption is used by a scope-1 benefit or by any
-        // cost (costs apply universally to the scope-1 net).
-        const items = (window.PROJECT_CONFIG && window.PROJECT_CONFIG.items) || [];
-        const scope1Assumptions = new Set();
-        for (const it of items) {
-          const inScope = it.kind === "cost" || it.scope === 1;
-          if (!inScope) continue;
-          (it.uses || []).forEach(u => scope1Assumptions.add(u));
-        }
-        const risks = allRisks.filter(r =>
-          r.threatens && scope1Assumptions.has(r.threatens)
-        );
+        // One source of truth: the risk reducer derives locus/source/category,
+        // scope-1 relevance, materiality, criticality and coverage. The badges
+        // and the author coverage prompt all read from it, so they can't drift
+        // from the fingerprint or the dashboard counts.
+        const riskItems = (window.PROJECT_CONFIG && window.PROJECT_CONFIG.items) || [];
+        const rm = (typeof computeRiskModel === "function")
+          ? computeRiskModel(riskItems, assumptions, A, allRisks) : null;
+        const risks = rm ? rm.relevant : allRisks.filter(r => r.threatens);
         if (risks.length === 0) return null;
 
         const commitmentRisks = risks.filter(r => r.locus === "commitment");
         const worldRisks = risks.filter(r => r.locus !== "commitment");
+        // Author/buyer axis: index.html (no __readOnly) → author; view.html
+        // (__readOnly:true) → buyer. Badges + the coverage prompt are author-only.
+        const authorMode = (typeof window !== "undefined") && !window.READ_ONLY;
 
         const butOpStyle = collapseMarginalia ? ({
           fontFamily: "var(--serif)",
@@ -6584,6 +6582,7 @@ const MinimalLanding = (props) => {
           lineHeight: 1.3,
         };
 
+        const SRC_COLOR = { intervention: "#8C7BB0", execution: "#C0884A", environment: "#6E8CA8" };
         const renderRisk = (r, idx) => {
           const key = `${r.locus}:${r.threatens || idx}:${idx}`;
           return (
@@ -6606,13 +6605,37 @@ const MinimalLanding = (props) => {
               }}>
                 {idx + 1}
               </div>
-              <div style={{
-                fontFamily: "var(--serif)", fontWeight: 500,
-                fontSize: 17, color: "var(--ink)",
-                letterSpacing: "-0.005em", lineHeight: 1.3,
-                minWidth: 0,
-              }}>
-                {r.title}
+              <div style={{ minWidth: 0 }}>
+                <div style={{
+                  fontFamily: "var(--serif)", fontWeight: 500,
+                  fontSize: 17, color: "var(--ink)",
+                  letterSpacing: "-0.005em", lineHeight: 1.3,
+                }}>
+                  {r.title}
+                </div>
+                {/* Author view only — the recipient sees the title alone. */}
+                {authorMode && (
+                  <div style={{
+                    display: "flex", alignItems: "center", flexWrap: "wrap",
+                    gap: 8, marginTop: 5, fontSize: 11, color: "var(--muted-2)",
+                    fontFamily: "var(--mono)",
+                  }} title="Author view only — the recipient sees the title alone.">
+                    <span style={{
+                      width: 7, height: 7, borderRadius: "50%", flex: "0 0 auto",
+                      background: SRC_COLOR[r.source] || "var(--line-strong)",
+                    }} aria-hidden />
+                    <span>{r.source}</span>
+                    <span style={{ color: "var(--line-strong)" }}>·</span>
+                    <span>{r.category}</span>
+                    {r.impactLabel && (<>
+                      <span style={{ color: "var(--line-strong)" }}>·</span>
+                      <span style={{ fontStyle: "italic" }}>threatens {r.impactLabel}</span>
+                    </>)}
+                    {r.critical && (
+                      <span style={{ color: "var(--red-deep)", fontWeight: 600 }}>▲ critical</span>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -6651,6 +6674,22 @@ const MinimalLanding = (props) => {
                 <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
                   {worldRisks.map((r, idx) => renderRisk(r, commitmentRisks.length + idx))}
                 </div>
+              </div>
+            )}
+
+            {/* Coverage check — AUTHOR-ONLY. Reads rm.coverage; never goes into
+                CONFIG_VALIDATION, which the ungated ValidationBanner would render
+                to the buyer. view.html sets __readOnly:true so this is dark there. */}
+            {authorMode && rm && rm.coverage.uncovered.length > 0 && (
+              <div style={{
+                marginTop: 28, padding: "12px 14px", borderRadius: 10,
+                border: "1px dashed var(--line-strong)", background: "var(--surface-2)",
+                fontSize: 12.5, color: "var(--muted)", lineHeight: 1.55,
+              }} title="Author view only — never shown to the recipient.">
+                <strong style={{ color: "var(--ink-2)", fontWeight: 600 }}>Coverage check (author only).</strong>{" "}
+                {rm.coverage.uncovered.length} load-bearing assumption{rm.coverage.uncovered.length > 1 ? "s have" : " has"} no named risk{" — "}
+                <span style={{ fontStyle: "italic" }}>{rm.coverage.uncovered.slice(0, 4).map(u => u.label).join(", ")}{rm.coverage.uncovered.length > 4 ? ", …" : ""}</span>.{" "}
+                The most load-bearing input with no risk is a confirmation-bias blind spot — sweep it, or consciously clear it.
               </div>
             )}
           </div>

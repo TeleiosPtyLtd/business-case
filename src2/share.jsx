@@ -756,58 +756,25 @@ const buildSnapshot = ({ items, assumptionsEff, overrides }) => {
       const sc = [1, 2, 3].includes(it.scope) ? it.scope : 1;
       if (sc === 1) primaryBenefit += t; else bonusBenefits += t;
     }
-    // Risk exposure as a SHARE of the case's own primary value — self-relative,
-    // so it's comparable across cases without an external scale. For each
-    // scope-1-relevant risk (one threatening an assumption used by a scope-1
-    // benefit or any cost), its materiality = the sensitivity of the assumption
-    // it threatens (how much net swings if that input goes bad), attributed to
-    // its source. Source: explicit `source` (intervention|execution|environment),
-    // else derived from locus (commitment → execution, world → environment).
-    let risk = null;
+    // Risk exposure + counts come from the single risk reducer (computeRiskModel)
+    // so the fingerprint, the case page, and the dashboard can't disagree.
+    // `risk` (exposure) is byte-identical to the old headline.risk shape;
+    // `riskCounts` (assessed/critical) renders even when exposure is null.
+    let risk = null, riskCounts = null;
     const cfg = (typeof window !== "undefined" && window.PROJECT_CONFIG) || {};
-    if (Array.isArray(cfg.risks) && cfg.risks.length) {
-      const allIds = assumptionsEff.map(a => a.id);
-      const usesOf = (it) => (Array.isArray(it.uses) && it.uses.length)
-        ? it.uses
-        : (typeof extractAssumptionIds === "function" ? extractAssumptionIds(it._grossSrc || "", allIds) : []);
-      const scope1Ass = new Set();
-      for (const it of items) {
-        const inScope = it.kind === "cost" || ([1, 2, 3].includes(it.scope) ? it.scope : 1) === 1;
-        if (inScope) usesOf(it).forEach(u => scope1Ass.add(u));
-      }
-      const rel = cfg.risks.filter(r => r && r.threatens && scope1Ass.has(r.threatens));
-      if (rel.length) {
-        const rangeById = {};
-        try {
-          (computeSensitivity(items, A, assumptionsEff) || [])
-            .forEach(s => { rangeById[s.id] = s.range; });
-        } catch (e2) { /* sensitivity is best-effort */ }
-        const srcOf = (r) =>
-          (r.source === "intervention" || r.source === "execution" || r.source === "environment")
-            ? r.source
-            : (r.locus === "commitment" ? "execution" : "environment");
-        const valueAtRisk = { intervention: 0, execution: 0, environment: 0 };
-        const counts = { intervention: 0, execution: 0, environment: 0 };
-        const seen = {};
-        for (const r of rel) {
-          const src = srcOf(r);
-          counts[src] += 1;
-          if (r.threatens && !seen[r.threatens]) {       // count each assumption's value once
-            seen[r.threatens] = true;
-            valueAtRisk[src] += (rangeById[r.threatens] || 0);
-          }
-        }
-        const totalVar = valueAtRisk.intervention + valueAtRisk.execution + valueAtRisk.environment;
-        const denom = primaryBenefit > 0 ? primaryBenefit : (m.totalBenefits > 0 ? m.totalBenefits : null);
-        risk = { valueAtRisk, totalVar, counts, exposurePct: denom ? totalVar / denom : null };
-      }
+    if (typeof computeRiskModel === "function" && Array.isArray(cfg.risks) && cfg.risks.length) {
+      try {
+        const rm = computeRiskModel(items, assumptionsEff, A, cfg.risks);
+        risk = rm.exposure;
+        riskCounts = { assessed: rm.counts.assessed, critical: rm.counts.critical };
+      } catch (e2) { /* best-effort */ }
     }
     headline = {
       net: m.net, totalBenefits: m.totalBenefits, totalCosts: m.totalCosts,
       primaryBenefit, bonusBenefits,
       bcr: m.totalCosts > 0 ? m.totalBenefits / m.totalCosts : null,
       paybackPeriod: pay ? pay.paybackPeriod : null,
-      risk,
+      risk, riskCounts,
       horizon: window.HORIZON, granularity: window.GRANULARITY || "year",
     };
   } catch (e) { /* headline is best-effort */ }
@@ -839,6 +806,18 @@ const buildSnapshot = ({ items, assumptionsEff, overrides }) => {
   // Without this the recipient sees no Now-section equation and the
   // "Let's proceed" button falls back to its standalone placement.
   baseline: (window.PROJECT_CONFIG && window.PROJECT_CONFIG.baseline) || [],
+  // Snapshot carries the LEAN risk shape only. The Risk Event Card body
+  // (outcomes/signposts/owner/likelihood) stays author-side in project.config.js
+  // and never crosses the wire — keeps the buyer view title-only by construction
+  // (no viewer-flag gating, which CLAUDE.md forbids). source/category/guideword
+  // DO ship (the fingerprint + author-mode badges need them).
+  risks: (Array.isArray(window.PROJECT_CONFIG && window.PROJECT_CONFIG.risks) ? window.PROJECT_CONFIG.risks : [])
+    .filter(r => r && r.title && r.threatens && r.noMaterialRisk !== true)
+    .map(r => ({
+      title: r.title, threatens: r.threatens, locus: r.locus, source: r.source,
+      category: r.category, guideword: r.guideword,
+      ...(Array.isArray(r.threatensAlso) && r.threatensAlso.length ? { threatensAlso: r.threatensAlso } : {}),
+    })),
   overrides,
   };
 };

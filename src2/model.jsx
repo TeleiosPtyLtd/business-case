@@ -178,6 +178,30 @@ function validateConfig(cfg) {
     if (nBenefit === 0) warnings.push("no benefits defined");
   }
 
+  // Risk well-formedness — warnings only (safe to surface; a malformed risk
+  // drops from the page/fingerprint, never red-banners). Coverage GAPS are NOT
+  // checked here (they'd leak to the buyer via the ungated ValidationBanner) —
+  // that lives in computeRiskModel.coverage, surfaced author-side only.
+  const riskList = Array.isArray(cfg.risks) ? cfg.risks : [];
+  const VALID_SOURCE   = new Set(["intervention", "execution", "environment"]);
+  const VALID_CATEGORY = new Set(["preventable", "strategy", "external"]);
+  const assumptionIds = new Set(ids);
+  const seenRiskId = new Set();
+  for (const r of riskList) {
+    if (!r || typeof r !== "object") { warnings.push(`risk: not an object`); continue; }
+    const tag = r.id || r.title || "(untitled)";
+    if (!r.title && r.noMaterialRisk !== true) warnings.push(`risk ${tag}: missing title`);
+    if (!r.threatens) warnings.push(`risk ${tag}: no 'threatens' — won't appear on the page or fingerprint`);
+    else if (!assumptionIds.has(r.threatens)) warnings.push(`risk ${tag}: threatens unknown assumption '${r.threatens}'`);
+    if (Array.isArray(r.threatensAlso)) for (const t of r.threatensAlso)
+      if (!assumptionIds.has(t)) warnings.push(`risk ${tag}: threatensAlso unknown assumption '${t}'`);
+    if (r.id) { if (seenRiskId.has(r.id)) warnings.push(`risk ${tag}: duplicate id`); seenRiskId.add(r.id); }
+    if (r.source != null && !VALID_SOURCE.has(r.source)) warnings.push(`risk ${tag}: bad source '${r.source}'`);
+    if (r.category != null && !VALID_CATEGORY.has(r.category)) warnings.push(`risk ${tag}: bad category '${r.category}'`);
+    if (r.likelihood != null && (typeof r.likelihood !== "number" || r.likelihood < 1 || r.likelihood > 5)) warnings.push(`risk ${tag}: likelihood must be 1..5`);
+    if (r.signposts != null && !Array.isArray(r.signposts)) warnings.push(`risk ${tag}: signposts must be an array`);
+  }
+
   return { errors, warnings };
 }
 
@@ -387,6 +411,155 @@ function computeSensitivity(items, A, baseAssumptions, optsOrDelta) {
 }
 
 // =========================================================================
+// RISK MODEL — the stateless reducer behind the strategic-risk system.
+// Pure relative to the module's HORIZON/GRANULARITY globals (same caveat as
+// computeModel). ONE source of truth: buildSnapshot, the case page, the
+// validator and the /mine headline all read from computeRiskModel — no
+// surface re-implements materiality, the crit line, exposure, or coverage.
+// =========================================================================
+
+const RISK_SOURCES = ["intervention", "execution", "environment"];
+const RISK_MATERIAL_FRACTION   = 0.10;  // load-bearing line: net swing >= 10% of primary benefit
+const RISK_CRITICAL_LIKELIHOOD = 3;     // buyer must rate >= 3 (1..5) for "critical"
+
+const __riskSlug = (s) => String(s == null ? "" : s)
+  .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 24);
+
+// Shared dependency resolver — formula-first, `uses` fallback (matches the
+// authoritative idsFor precedence). Routes app.jsx + share.jsx through one
+// definition so risk-relevance counts can't drift across surfaces.
+function itemUses(it, ids) {
+  const set = ids instanceof Set ? ids : new Set(ids);
+  const fromFormula = extractAssumptionIds(it._grossSrc, set);
+  if (fromFormula.length) return fromFormula;
+  return Array.isArray(it.uses) ? it.uses.filter(u => set.has(u)) : [];
+}
+function scope1AssumptionSet(items, ids) {
+  const set = ids instanceof Set ? ids : new Set(ids);
+  const out = new Set();
+  for (const it of items) {
+    const sc = [1, 2, 3].includes(it.scope) ? it.scope : 1;   // default missing scope -> 1
+    if (it.kind === "cost" || sc === 1) itemUses(it, set).forEach(u => out.add(u));
+  }
+  return out;
+}
+
+// locus is DERIVED from the threatened assumption's `controllable` flag (never
+// authored); source/category derive from locus unless set explicitly.
+function deriveLocus(r, assumptionById) {
+  const a = r.threatens ? assumptionById[r.threatens] : null;
+  if (a && typeof a.controllable === "boolean") return a.controllable ? "commitment" : "world";
+  return r.locus === "commitment" ? "commitment" : "world";
+}
+function deriveSource(r, locus) {
+  if (r.source === "intervention" || r.source === "execution" || r.source === "environment") return r.source;
+  return locus === "commitment" ? "execution" : "environment";
+}
+function deriveCategory(r, source) {
+  if (r.category === "preventable" || r.category === "strategy" || r.category === "external") return r.category;
+  return source === "execution" ? "preventable" : source === "intervention" ? "strategy" : "external";
+}
+
+function normalizeRisk(r, idx, assumptionById) {
+  const locus    = deriveLocus(r, assumptionById);
+  const source   = deriveSource(r, locus);
+  const category = deriveCategory(r, source);
+  const id = r.id || `r_${__riskSlug(r.threatens) || "x"}_${__riskSlug(r.title)}_${idx}`;
+  const likelihood = (typeof r.likelihood === "number" && r.likelihood >= 1 && r.likelihood <= 5)
+    ? Math.round(r.likelihood) : null;
+  return { ...r, id, title: r.title || "", threatens: r.threatens || null,
+    threatensAlso: Array.isArray(r.threatensAlso) ? r.threatensAlso.filter(Boolean) : [],
+    locus, source, category, likelihood,
+    likelihoodPrior: (typeof r.likelihoodPrior === "number") ? r.likelihoodPrior : null,
+    guideword: r.guideword || null,
+    signposts: Array.isArray(r.signposts) ? r.signposts.filter(Boolean) : [],
+    owner: r.owner || null, noMaterialRisk: r.noMaterialRisk === true };
+}
+
+// computeRiskModel(items, assumptions, A, risks, opts?) -> full risk analysis.
+// { risks, relevant, exposure, coverage, counts, primaryBenefit, denom, sensitivity }.
+// `exposure` is byte-identical to the legacy headline.risk shape.
+function computeRiskModel(items, assumptions, A, risks, opts) {
+  opts = opts || {};
+  const materialFraction = opts.materialFraction != null ? opts.materialFraction : RISK_MATERIAL_FRACTION;
+  const critLikelihood   = opts.critLikelihood   != null ? opts.critLikelihood   : RISK_CRITICAL_LIKELIHOOD;
+  const ids = new Set(assumptions.map(a => a.id));
+  const assumptionById = {}; assumptions.forEach(a => { assumptionById[a.id] = a; });
+  const labelById = {}; assumptions.forEach(a => { labelById[a.id] = a.label || a.id; });
+
+  // 1) Materiality — net swing per assumption.
+  const sens = computeSensitivity(items, A, assumptions);
+  const rangeById = {}; sens.forEach(s => { rangeById[s.id] = s.range; });
+
+  // 2) Scope-1 universe + primary value (denominator + materiality basis).
+  const scope1 = scope1AssumptionSet(items, ids);
+  const m = computeModel(items, A);
+  let primaryBenefit = 0;
+  for (const it of items) {
+    if (it.kind === "cost") continue;
+    if (([1, 2, 3].includes(it.scope) ? it.scope : 1) === 1) {
+      primaryBenefit += (m.perItem[it.id] ? m.perItem[it.id].total : 0) || 0;
+    }
+  }
+  const denom = primaryBenefit > 0 ? primaryBenefit : (m.totalBenefits > 0 ? m.totalBenefits : null);
+  const peakScope1 = Math.max(0, ...sens.filter(s => scope1.has(s.id)).map(s => s.range));
+  const lineValue = denom ? denom * materialFraction : peakScope1 * 0.10;
+  const isLoadBearing = (id) => (rangeById[id] || 0) > 0 && (rangeById[id] || 0) >= lineValue;
+
+  // 3) Per-risk normalize + score. Phantoms (noMaterialRisk) never render/count.
+  const all  = (Array.isArray(risks) ? risks : []).map((r, i) => normalizeRisk(r, i, assumptionById));
+  const real = all.filter(r => !r.noMaterialRisk);
+  const perRisk = real.map(r => {
+    const relevant    = !!(r.threatens && scope1.has(r.threatens));
+    const materiality = r.threatens ? (rangeById[r.threatens] || 0) : 0;
+    const aboveLine   = isLoadBearing(r.threatens);
+    const assessed    = r.likelihood != null;                       // only a buyer rating counts (F7)
+    const plausible   = r.likelihood != null && r.likelihood >= critLikelihood;
+    const critical    = relevant && aboveLine && plausible;
+    return { ...r, relevant, materiality, materialityPct: denom ? materiality / denom : null,
+      aboveLine, assessed, critical, impactLabel: labelById[r.threatens] || r.threatens || null };
+  });
+
+  // 4) Exposure — Σ value-at-risk by source, each threatened assumption once.
+  const valueAtRisk = { intervention: 0, execution: 0, environment: 0 };
+  const counts      = { intervention: 0, execution: 0, environment: 0 };
+  const seenAss = {};
+  for (const r of perRisk) {
+    if (!r.relevant) continue;
+    counts[r.source] += 1;
+    if (r.threatens && !seenAss[r.threatens]) { seenAss[r.threatens] = true; valueAtRisk[r.source] += (rangeById[r.threatens] || 0); }
+  }
+  const totalVar = valueAtRisk.intervention + valueAtRisk.execution + valueAtRisk.environment;
+  const exposure = totalVar > 0
+    ? { valueAtRisk, totalVar, counts, exposurePct: denom ? totalVar / denom : null }
+    : null;
+
+  // 5) Coverage — load-bearing scope-1 assumptions with no named risk.
+  const threatened = new Set();
+  real.forEach(r => { if (r.threatens) threatened.add(r.threatens); (r.threatensAlso || []).forEach(t => threatened.add(t)); });
+  const cleared = new Set(all.filter(r => r.noMaterialRisk && r.threatens).map(r => r.threatens));
+  const loadBearing = sens.filter(s => isLoadBearing(s.id) && scope1.has(s.id))
+    .map(s => ({ id: s.id, label: labelById[s.id] || s.id, range: s.range,
+      rangePct: denom ? s.range / denom : null, covered: threatened.has(s.id) || cleared.has(s.id) }));
+  const uncovered = loadBearing.filter(a => !a.covered);
+  const emptySourceBuckets = RISK_SOURCES.filter(src => counts[src] === 0);
+
+  return {
+    risks: perRisk,
+    relevant: perRisk.filter(r => r.relevant),
+    exposure,
+    coverage: { loadBearing, uncovered, emptySourceBuckets, materialityLine: lineValue },
+    counts: {
+      total: real.length,
+      relevant: perRisk.filter(r => r.relevant).length,
+      assessed: perRisk.filter(r => r.relevant && r.assessed).length,
+      critical: perRisk.filter(r => r.relevant && r.critical).length,
+    },
+    primaryBenefit, denom, sensitivity: sens,
+  };
+}
+
+// =========================================================================
 // FORMAT HELPERS
 // =========================================================================
 
@@ -455,6 +628,8 @@ Object.assign(window, {
   CONFIG_VALIDATION,
   computeModel, computeItemSeries, computePayback,
   computeSensitivity, splitMultiplicativeFactors,
+  computeRiskModel, normalizeRisk, scope1AssumptionSet, itemUses,
+  RISK_SOURCES, RISK_MATERIAL_FRACTION, RISK_CRITICAL_LIKELIHOOD,
   validateFormula, validateConfig, extractAssumptionIds, compileFormula,
   fmtMoney, fmtMoneyExact, fmtPct, niceRound,
 });
