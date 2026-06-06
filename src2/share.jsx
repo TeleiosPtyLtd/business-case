@@ -816,6 +816,11 @@ const buildSnapshot = ({ items, assumptionsEff, overrides }) => {
     .map(r => ({
       title: r.title, threatens: r.threatens, locus: r.locus, source: r.source,
       category: r.category, guideword: r.guideword,
+      // `likelihood` (the 1–5 rating) persists so assessed/critical survive a
+      // re-save and round-trip into the editor. It's a bare number, not shown
+      // on the title-only buyer page — outcomes/signposts/owner/likelihoodPrior
+      // remain author-side (stripped).
+      ...(typeof r.likelihood === "number" ? { likelihood: r.likelihood } : {}),
       ...(Array.isArray(r.threatensAlso) && r.threatensAlso.length ? { threatensAlso: r.threatensAlso } : {}),
     })),
   overrides,
