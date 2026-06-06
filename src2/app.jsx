@@ -6595,6 +6595,7 @@ const MinimalLanding = (props) => {
         };
 
         const SRC_COLOR = { intervention: "#8C7BB0", execution: "#C0884A", environment: "#6E8CA8" };
+        const SRC_LABEL = { intervention: "Intervention", execution: "Execution", environment: "Environment" };
         const renderRisk = (r, idx) => {
           const key = `${r.locus}:${r.threatens || idx}:${idx}`;
           return (
@@ -6608,9 +6609,9 @@ const MinimalLanding = (props) => {
             }}>
               <div style={{
                 fontFamily: "var(--serif)",
-                fontSize: 22, fontWeight: 600,
-                color: "var(--red-deep)",
-                lineHeight: 1.4,
+                fontSize: 19, fontWeight: 500,
+                color: "var(--muted)",
+                lineHeight: 1.35,
                 textAlign: "right",
                 paddingTop: 1,
                 fontVariantNumeric: "tabular-nums",
@@ -6625,26 +6626,34 @@ const MinimalLanding = (props) => {
                 }}>
                   {r.title}
                 </div>
-                {/* Author view only — the recipient sees the title alone. */}
+                {/* Author view only — the recipient sees the title alone. A
+                    quiet editorial gloss (not a mono tag row): the source dot
+                    matches the /mine fingerprint, the threatened target ties
+                    the risk back to the model. Category is omitted — it tracks
+                    the source 1:1 by default, so it read as redundant noise. */}
                 {authorMode && (
                   <div style={{
-                    display: "flex", alignItems: "center", flexWrap: "wrap",
-                    gap: 8, marginTop: 5, fontSize: 11, color: "var(--muted-2)",
-                    fontFamily: "var(--mono)",
+                    display: "flex", alignItems: "baseline", flexWrap: "wrap",
+                    gap: 6, marginTop: 5,
+                    fontFamily: "var(--serif)", fontStyle: "italic",
+                    fontSize: 14, lineHeight: 1.4, color: "var(--muted)",
+                    letterSpacing: "-0.005em",
                   }} title="Author view only — the recipient sees the title alone.">
                     <span style={{
                       width: 7, height: 7, borderRadius: "50%", flex: "0 0 auto",
+                      alignSelf: "center",
                       background: SRC_COLOR[r.source] || "var(--line-strong)",
                     }} aria-hidden />
-                    <span>{r.source}</span>
-                    <span style={{ color: "var(--line-strong)" }}>·</span>
-                    <span>{r.category}</span>
-                    {r.impactLabel && (<>
-                      <span style={{ color: "var(--line-strong)" }}>·</span>
-                      <span style={{ fontStyle: "italic" }}>threatens {r.impactLabel}</span>
-                    </>)}
+                    <span>{SRC_LABEL[r.source] || r.source}</span>
+                    {r.impactLabel && (
+                      <span>— threatens <span style={{ color: "var(--ink-2)" }}>{r.impactLabel}</span></span>
+                    )}
                     {r.critical && (
-                      <span style={{ color: "var(--red-deep)", fontWeight: 600 }}>▲ critical</span>
+                      <span style={{
+                        fontFamily: "var(--mono)", fontStyle: "normal",
+                        fontSize: 10.5, letterSpacing: "0.04em", textTransform: "uppercase",
+                        color: "var(--red-deep)", fontWeight: 600, marginLeft: 2,
+                      }}>▲ critical</span>
                     )}
                   </div>
                 )}
@@ -6686,22 +6695,6 @@ const MinimalLanding = (props) => {
                 <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
                   {worldRisks.map((r, idx) => renderRisk(r, commitmentRisks.length + idx))}
                 </div>
-              </div>
-            )}
-
-            {/* Coverage check — AUTHOR-ONLY. Reads rm.coverage; never goes into
-                CONFIG_VALIDATION, which the ungated ValidationBanner would render
-                to the buyer. view.html sets __readOnly:true so this is dark there. */}
-            {authorMode && rm && rm.coverage.uncovered.length > 0 && (
-              <div style={{
-                marginTop: 28, padding: "12px 14px", borderRadius: 10,
-                border: "1px dashed var(--line-strong)", background: "var(--surface-2)",
-                fontSize: 12.5, color: "var(--muted)", lineHeight: 1.55,
-              }} title="Author view only — never shown to the recipient.">
-                <strong style={{ color: "var(--ink-2)", fontWeight: 600 }}>Coverage check (author only).</strong>{" "}
-                {rm.coverage.uncovered.length} load-bearing assumption{rm.coverage.uncovered.length > 1 ? "s have" : " has"} no named risk{" — "}
-                <span style={{ fontStyle: "italic" }}>{rm.coverage.uncovered.slice(0, 4).map(u => u.label).join(", ")}{rm.coverage.uncovered.length > 4 ? ", …" : ""}</span>.{" "}
-                The most load-bearing input with no risk is a confirmation-bias blind spot — sweep it, or consciously clear it.
               </div>
             )}
           </div>
