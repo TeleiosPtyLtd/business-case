@@ -756,10 +756,14 @@ const buildSnapshot = ({ items, assumptionsEff, overrides }) => {
       const sc = [1, 2, 3].includes(it.scope) ? it.scope : 1;
       if (sc === 1) primaryBenefit += t; else bonusBenefits += t;
     }
-    // Risk counts, scope-1-relevant (mirrors the Risks section): a risk counts
-    // if it threatens an assumption used by a scope-1 benefit or by any cost.
-    // locus "commitment" = controllable (we own); else = environmental (world).
-    let risksControllable = null, risksEnvironmental = null;
+    // Risk exposure as a SHARE of the case's own primary value — self-relative,
+    // so it's comparable across cases without an external scale. For each
+    // scope-1-relevant risk (one threatening an assumption used by a scope-1
+    // benefit or any cost), its materiality = the sensitivity of the assumption
+    // it threatens (how much net swings if that input goes bad), attributed to
+    // its source. Source: explicit `source` (intervention|execution|environment),
+    // else derived from locus (commitment → execution, world → environment).
+    let risk = null;
     const cfg = (typeof window !== "undefined" && window.PROJECT_CONFIG) || {};
     if (Array.isArray(cfg.risks) && cfg.risks.length) {
       const allIds = assumptionsEff.map(a => a.id);
@@ -772,15 +776,38 @@ const buildSnapshot = ({ items, assumptionsEff, overrides }) => {
         if (inScope) usesOf(it).forEach(u => scope1Ass.add(u));
       }
       const rel = cfg.risks.filter(r => r && r.threatens && scope1Ass.has(r.threatens));
-      risksControllable = rel.filter(r => r.locus === "commitment").length;
-      risksEnvironmental = rel.filter(r => r.locus !== "commitment").length;
+      if (rel.length) {
+        const rangeById = {};
+        try {
+          (computeSensitivity(items, A, assumptionsEff) || [])
+            .forEach(s => { rangeById[s.id] = s.range; });
+        } catch (e2) { /* sensitivity is best-effort */ }
+        const srcOf = (r) =>
+          (r.source === "intervention" || r.source === "execution" || r.source === "environment")
+            ? r.source
+            : (r.locus === "commitment" ? "execution" : "environment");
+        const valueAtRisk = { intervention: 0, execution: 0, environment: 0 };
+        const counts = { intervention: 0, execution: 0, environment: 0 };
+        const seen = {};
+        for (const r of rel) {
+          const src = srcOf(r);
+          counts[src] += 1;
+          if (r.threatens && !seen[r.threatens]) {       // count each assumption's value once
+            seen[r.threatens] = true;
+            valueAtRisk[src] += (rangeById[r.threatens] || 0);
+          }
+        }
+        const totalVar = valueAtRisk.intervention + valueAtRisk.execution + valueAtRisk.environment;
+        const denom = primaryBenefit > 0 ? primaryBenefit : (m.totalBenefits > 0 ? m.totalBenefits : null);
+        risk = { valueAtRisk, totalVar, counts, exposurePct: denom ? totalVar / denom : null };
+      }
     }
     headline = {
       net: m.net, totalBenefits: m.totalBenefits, totalCosts: m.totalCosts,
       primaryBenefit, bonusBenefits,
       bcr: m.totalCosts > 0 ? m.totalBenefits / m.totalCosts : null,
       paybackPeriod: pay ? pay.paybackPeriod : null,
-      risksControllable, risksEnvironmental,
+      risk,
       horizon: window.HORIZON, granularity: window.GRANULARITY || "year",
     };
   } catch (e) { /* headline is best-effort */ }
