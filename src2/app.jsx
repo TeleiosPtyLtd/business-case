@@ -6528,9 +6528,21 @@ const MinimalLanding = (props) => {
         // scope-1 relevance, materiality, criticality and coverage. The badges
         // and the author coverage prompt all read from it, so they can't drift
         // from the fingerprint or the dashboard counts.
-        const riskItems = (window.PROJECT_CONFIG && window.PROJECT_CONFIG.items) || [];
-        const rm = (typeof computeRiskModel === "function")
-          ? computeRiskModel(riskItems, assumptions, A, allRisks) : null;
+        // Use the COMPILED items (adjustedItems) — here `gross` is a function.
+        // window.PROJECT_CONFIG.items carries `gross` as a raw formula STRING,
+        // so feeding it to computeRiskModel makes computeModel/computeSensitivity
+        // call item.gross(...) on a string → TypeError → the render throws and
+        // white-screens the entire case the instant the Now-gate unlocks and the
+        // Risks section first mounts. The try/catch is belt-and-suspenders: a bad
+        // risk config degrades to titles-only instead of taking the page down.
+        const riskItems = adjustedItems;
+        let rm = null;
+        try {
+          rm = (typeof computeRiskModel === "function")
+            ? computeRiskModel(riskItems, assumptions, A, allRisks) : null;
+        } catch (e) {
+          console.error("computeRiskModel failed; rendering risks without analysis:", e);
+        }
         const risks = rm ? rm.relevant : allRisks.filter(r => r.threatens);
         if (risks.length === 0) return null;
 
