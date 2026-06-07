@@ -419,15 +419,54 @@ const ShareModal = ({ snapshot, onClose, existingShare: existingShareProp, onSha
     }
   };
 
+  // Promote a private draft to a public share IN PLACE (same id, url, /mine
+  // row). Dual-auth via ownerAuth (stored owner token, else the signed-in JWT).
+  // On success, route into the "just created" success view (mode→create) so the
+  // viewer URL is shown and the app persists the now-public record.
+  const publishDraft = async () => {
+    if (!canCreate) return;
+    setStatus("uploading");
+    setError(null);
+    try {
+      const baseUrl = SHARE_ENDPOINT.replace(/\/$/, "");
+      const { authHeader, body } = await ownerAuth({ password });
+      const res = await fetch(`${baseUrl}/${encodeURIComponent(existingShare.id)}/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeader },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`);
+      }
+      const data = await res.json();
+      const url = data.url || `${window.location.origin}/view/${existingShare.id}`;
+      setShareUrl(url);
+      setMode("create");      // reuse the "just created" success UI
+      setStatus("done");
+      onShareSaved && onShareSaved({
+        ...existingShare, url, visibility: "public",
+        lastUpdatedAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      setError(e.message || "Publish failed");
+      setStatus("error");
+    }
+  };
+
   // -- Render states --
+  //   private draft - set a password to publish in place
   //   create/gate   - step 1: sign in to keep track, or continue without
   //   create/form   - step 2: choose a password, upload
   //   update        - existing share is loaded, show URL + Update button
   //   done (create) - just created, show URL + copy
-  const isUpdating = mode === "update" && existingShare;
+  // A private draft (auto-registered to /mine) isn't "shared" yet — opening the
+  // modal on it offers "set a password to publish", not the normal update flow.
+  const isPrivateDraft = !!(existingShare && existingShare.visibility === "private") && status !== "done";
+  const isUpdating = mode === "update" && existingShare && !isPrivateDraft;
   const justCreated = status === "done" && shareUrl && mode === "create";
-  const showGate = !isUpdating && !justCreated && step === "gate";
-  const showForm = !isUpdating && !justCreated && step === "form";
+  const showGate = !isUpdating && !isPrivateDraft && !justCreated && step === "gate";
+  const showForm = !isUpdating && !isPrivateDraft && !justCreated && step === "form";
 
   return (
     <Modal title={isUpdating ? "Update shared business case" : "Share business case"} onClose={onClose} width={520}>
@@ -455,6 +494,30 @@ const ShareModal = ({ snapshot, onClose, existingShare: existingShareProp, onSha
               locally so you can push updates from this device — keep this device, or the link is lost.
             </div>
           )}
+        </div>
+      )}
+
+      {isPrivateDraft && (
+        <div>
+          <div style={{ color: "var(--muted)", fontSize: 13, marginBottom: 14, lineHeight: 1.55 }}>
+            This case is a <strong>private draft</strong> in your portfolio — only you can open it.
+            Set a viewer password to <strong>share it publicly</strong>. The link and its place in
+            your portfolio stay the same; anyone with the password can then view it.
+          </div>
+          <Field label="Viewer password">
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+              placeholder="At least 4 characters" autoFocus style={inputStyle} />
+          </Field>
+          <Field label="Confirm password">
+            <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} style={inputStyle} />
+          </Field>
+          {error && <ErrorBox text={error} />}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+            <button onClick={onClose} style={secondaryBtnStyle}>Close</button>
+            <button onClick={publishDraft} disabled={!canCreate} style={primaryBtnStyle(canCreate)}>
+              {status === "uploading" ? "Publishing…" : "Publish with password"}
+            </button>
+          </div>
         </div>
       )}
 

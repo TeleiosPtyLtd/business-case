@@ -478,6 +478,28 @@ const App = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.user && session.user.userId, share && share.id]);
 
+  // Gesture-driven counterpart to the silent auto-register: the ⋯-menu
+  // "Save to my portfolio" nudge. Runs inside a click, so it MAY sign the user
+  // in (popup) and refresh a stale token — things the on-load effect can't do.
+  // This is how a never-signed-in or stale-session studio gets its case onto
+  // /mine as a private draft.
+  const [savingPortfolio, setSavingPortfolio] = React.useState(false);
+  const saveToPortfolio = React.useCallback(async () => {
+    setOverflowOpen(false);
+    const caseKey = PROJECT_META && PROJECT_META.caseKey;
+    if (!caseKey) return;
+    setSavingPortfolio(true);
+    try {
+      if (!session.user) await session.signIn();          // gesture → popup sign-in
+      const token = await session.getFreshToken();        // gesture → silent refresh if stale
+      if (!token) return;
+      const snap = buildSnapshot({ items: adjustedItems, assumptionsEff, overrides });
+      const rec = await window.autoRegisterCase({ snapshot: snap, token, caseKey });
+      if (rec && rec.id) setShare(rec);
+    } catch { /* cancelled sign-in / popup blocked — silent */ }
+    finally { setSavingPortfolio(false); }
+  }, [session, adjustedItems, assumptionsEff, overrides]);
+
   return (
     <>
     <div className="no-print page-shell" style={{ minHeight: "100vh" }}>
@@ -555,6 +577,13 @@ const App = () => {
                       sub="Password-protected link"
                       onClick={() => { setShareOpen(true); setOverflowOpen(false); }}
                     />
+                    {PROJECT_META.caseKey && !(share && share.id) && (
+                      <ExportMenuItem
+                        title={savingPortfolio ? "Saving…" : "Save to my portfolio"}
+                        sub={session.user ? "Private draft on /mine" : "Sign in · saves a private draft"}
+                        onClick={savingPortfolio ? undefined : saveToPortfolio}
+                      />
+                    )}
                     <ExportMenuItem
                       title="Export to Excel"
                       sub="Live model, editable assumptions"
