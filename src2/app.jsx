@@ -4241,23 +4241,12 @@ const EstimateModal = ({ item, model, A, assumptions, setAssumption, viewOnly, h
     const cardH = cardRef.current ? cardRef.current.offsetHeight : 320;
     const vw = window.innerWidth, vh = window.innerHeight;
     const gap = 12;
-    const kind = it.benefitKind || "qualitative";
-
-    // Don't let the popover overlap headline figures that need to stay
-    // visible while the user edits assumptions — the Benefits row total
-    // at the top of the page, and the active column's subtotal header.
-    const headlineFloors = [];
-    const benefitsHeader = document.querySelector('[data-landing-row="benefits"]');
-    if (benefitsHeader) {
-      const r = benefitsHeader.getBoundingClientRect();
-      if (r.bottom > 0 && r.bottom < vh) headlineFloors.push(r.bottom);
-    }
-    const colHeader = document.querySelector(`[data-benefit-column-header="${kind}"]`);
-    if (colHeader) {
-      const r = colHeader.getBoundingClientRect();
-      if (r.bottom > 0 && r.bottom < vh) headlineFloors.push(r.bottom);
-    }
-    const minTop = (headlineFloors.length ? Math.max(...headlineFloors) : 0) + 8;
+    // Single-column ledger: the popover always opens directly below its row.
+    // (The old left/right placement was for the multi-column benefits layout,
+    // and the headline "floor" anchored on the benefits block — which now
+    // wraps the whole ledger — pushed the popover to the page bottom.)
+    const kind = "qualitative";
+    const minTop = 8;
 
     // Qualitative: open directly below its row (no dollar to read alongside,
     // and the narrower qualitative column makes a side popup awkward).
@@ -4954,6 +4943,354 @@ const AssumptionsGrid = ({ assumptions, A, setAssumption, viewOnly, onClose }) =
   ), document.body);
 };
 
+// Unified outcome ledger — replaces the separate Benefits and Costs blocks
+// with ONE table (benefit rows tinted pale green, cost rows pale red) and ONE
+// diverging bar chart (benefits up, costs down, on a shared y-axis). The Then
+// section was the tallest, most chart-heavy block on the page; this collapses
+// it to a compact ledger + a single per-period picture.
+const OutcomeLedger = ({
+  benefitItems = [], costItems = [], bonusItems = [],
+  horizon, granularity,
+  benefitsTotal, costsTotal, bonusTotal, net,
+  netOverridden, onOverrideNet, onClearNet,
+  onSelectItem, niceRounding, setNiceRounding,
+}) => {
+  const u = periodUnit(granularity);
+  const [editingNet, setEditingNet] = React.useState(false);
+  const [draft, setDraft] = React.useState("");
+  // Hovering a row OR a chart segment sets `hovered` to that item's id, which
+  // cross-highlights the row and ALL of that item's segments across periods.
+  const [hovered, setHovered] = React.useState(null);
+  const [showBonus, setShowBonus] = React.useState(true);
+  const [showChart, setShowChart] = React.useState(true);
+  const hueOf = (kind) => kind === "cost" ? "var(--red-deep)" : "var(--green-deep)";
+  // ORDINAL shade by rank (items arrive sorted, largest first) — even, gentle
+  // steps, NOT magnitude-scaled, so the gradation stays subtle. The same step
+  // drives both the row tint and the bar segment, so they read as one thing.
+  const ORD_OP = [0.8, 0.72, 0.65, 0.58, 0.52];
+  const ordOp = (i) => (ORD_OP[i] != null ? ORD_OP[i] : 0.46);
+  const rowTint = (i, kind) => `color-mix(in srgb, ${hueOf(kind)} ${(ordOp(i) * 16).toFixed(1)}%, transparent)`;
+  const periodSum = (items, p) => items.reduce((s, it) => s + Math.abs((it.series && it.series[p]) || 0), 0);
+  let yMax = 1;
+  for (let p = 0; p < horizon; p++) yMax = Math.max(yMax, periodSum(benefitItems, p), periodSum(costItems, p));
+  const H = 56;
+  // Running total (cumulative direct net) — drawn as a line over the bars,
+  // sharing their zero (the centre axis). Replaces the separate cashflow chart.
+  // HEADROOM keeps the line off the top edge so it can visibly keep climbing
+  // past the last bar (a dashed continuation implies the benefits go on).
+  const cum = []; { let acc = 0; for (let p = 0; p < horizon; p++) { acc += periodSum(benefitItems, p) - periodSum(costItems, p); cum.push(acc); } }
+  const cumAbsMax = Math.max(1, ...cum.map(v => Math.abs(v)));
+  const LINE_HEADROOM = 0.72;
+  const lineY = (v) => H - (v / cumAbsMax) * (LINE_HEADROOM * H);   // axis at y=H, never reaches the edge
+  const cx = (p) => ((p + 0.5) / horizon) * 100;
+  const pts = cum.map((v, p) => [cx(p), lineY(v)]);
+  const linePts = [[0, H]].concat(pts).map(q => `${q[0].toFixed(2)},${q[1].toFixed(2)}`).join(" ");
+  const _last = pts[pts.length - 1] || [0, H];
+  const _prev = pts.length > 1 ? pts[pts.length - 2] : [0, H];
+  const _slope = (_last[0] - _prev[0]) !== 0 ? (_last[1] - _prev[1]) / (_last[0] - _prev[0]) : 0;
+  const _extX = 105;
+  const _extY = Math.max(3, Math.min(2 * H - 3, _last[1] + _slope * (_extX - _last[0])));
+  const extPts = `${_last[0].toFixed(2)},${_last[1].toFixed(2)} ${_extX},${_extY.toFixed(2)}`;
+  const endCum = cum.length ? cum[cum.length - 1] : 0;
+  // Breakeven — the x where the cash position first crosses from below zero up
+  // to zero (the line starts at 0, so only an actual dip-and-recover counts).
+  let breakevenX = null;
+  { const vpts = [[0, 0]].concat(cum.map((v, p) => [cx(p), v]));
+    for (let k = 1; k < vpts.length; k++) {
+      const a = vpts[k - 1], b = vpts[k];
+      if (a[1] < 0 && b[1] >= 0) { const t = -a[1] / (b[1] - a[1] || 1); breakevenX = a[0] + t * (b[0] - a[0]); break; }
+    } }
+
+  const itemRow = (r, kind, i = 0) => {
+    const clickable = !!onSelectItem;
+    const isHov = hovered === r.id;
+    const dim = hovered != null && hovered !== r.id;
+    return (
+      <div key={r.id}
+        data-benefit-row-id={r.id}
+        onClick={clickable ? () => onSelectItem(r.id) : undefined}
+        onMouseEnter={() => setHovered(r.id)}
+        onMouseLeave={() => setHovered(null)}
+        title={clickable ? "Click to edit the estimate" : undefined}
+        style={{
+          display: "grid", gridTemplateColumns: "1fr auto", columnGap: 16,
+          alignItems: "baseline", padding: "8px 12px", borderRadius: 6,
+          background: rowTint(i, kind),
+          opacity: dim ? 0.45 : 1,
+          boxShadow: isHov ? `inset 0 0 0 1.5px ${hueOf(kind)}` : "none",
+          cursor: clickable ? "pointer" : "default",
+          transition: "opacity 120ms ease, box-shadow 120ms ease",
+        }}>
+        <span style={{ fontFamily: "var(--serif)", fontSize: 14.5,
+          color: "var(--ink-2)", letterSpacing: "-0.005em", lineHeight: 1.35 }}>{r.name}</span>
+        <span style={{ fontFamily: "var(--mono)", fontSize: 13.5, fontWeight: 600,
+          color: kind === "cost" ? "var(--red-deep)" : "var(--green-deep)",
+          fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+          {kind === "cost" ? "−" : "+"}{fmtMoney(Math.abs(r.total))}
+        </span>
+      </div>
+    );
+  };
+  const subHeader = (label, value, accent) => (
+    <div style={{
+      display: "grid", gridTemplateColumns: "1fr auto", alignItems: "baseline",
+      columnGap: 16, padding: "10px 12px 6px",
+    }}>
+      <span style={{ fontFamily: "var(--serif)", fontSize: 15.5, fontWeight: 600, color: "var(--ink)" }}>{label}</span>
+      <span style={{ fontFamily: "var(--mono)", fontSize: 14.5, fontWeight: 700, color: accent, fontVariantNumeric: "tabular-nums" }}>{value}</span>
+    </div>
+  );
+  const commitNet = () => {
+    const v = parseFloat(String(draft).replace(/[^0-9.\-]/g, ""));
+    if (Number.isFinite(v) && onOverrideNet) onOverrideNet(v);
+    setEditingNet(false);
+  };
+  // One stacked column of per-item segments (benefits up, costs down). Each
+  // segment is shaded + hover-readable so the reader can see which benefit /
+  // cost contributes in a given period.
+  const segStack = (items, kind, p) => items.map((it, i) => {
+    const v = Math.abs((it.series && it.series[p]) || 0);
+    if (!(v > 0)) return null;
+    const isHov = hovered === it.id;
+    const dim = hovered != null && hovered !== it.id;
+    return (
+      <div key={it.id}
+        title={`${it.name}: ${kind === "cost" ? "−" : "+"}${fmtMoney(v)}`}
+        onMouseEnter={() => setHovered(it.id)}
+        onMouseLeave={() => setHovered(null)}
+        style={{
+          width: "52%", height: `${(v / yMax) * H}px`,
+          background: hueOf(kind),
+          opacity: dim ? 0.14 : (isHov ? 1 : ordOp(i)),
+          outline: isHov ? "1.5px solid var(--ink)" : "none", outlineOffset: -1,
+          cursor: "pointer", transition: "opacity 120ms ease",
+        }} />
+    );
+  });
+
+  return (
+    <div>
+      {/* Combined table — benefit rows green, cost rows red, one subtraction. */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        {subHeader("Direct benefits", `+${fmtMoney(benefitsTotal)}`, "var(--green-deep)")}
+        {benefitItems.map((r, i) => itemRow(r, "benefit", i))}
+        {subHeader("Costs", `−${fmtMoney(costsTotal)}`, "var(--red-deep)")}
+        {costItems.map((r, i) => itemRow(r, "cost", i))}
+        <div style={{
+          display: "grid", gridTemplateColumns: "1fr auto", alignItems: "baseline",
+          columnGap: 16, padding: "16px 12px 0", marginTop: 8,
+          borderTop: "1px solid var(--line-strong)",
+        }}>
+          <span style={{ fontFamily: "var(--serif)", fontSize: 21, fontWeight: 600, color: "var(--ink)",
+            display: "inline-flex", alignItems: "baseline", gap: 10 }}>
+            Total over {timelineLabel(horizon, granularity)}
+            {netOverridden && onClearNet && (
+              <button type="button" onClick={(e) => { e.stopPropagation(); onClearNet(); }}
+                title="Clear override — back to the computed total"
+                style={{ background: "none", border: "none", padding: 0, cursor: "pointer",
+                  fontFamily: "var(--mono)", fontSize: 10.5, letterSpacing: "0.04em", textTransform: "uppercase",
+                  color: "var(--muted)", borderBottom: "1px solid var(--line-strong)" }}>reset</button>
+            )}
+          </span>
+          {editingNet ? (
+            <input autoFocus value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={commitNet}
+              onKeyDown={(e) => { if (e.key === "Enter") commitNet(); if (e.key === "Escape") setEditingNet(false); }}
+              style={{ width: 160, textAlign: "right", fontFamily: "var(--mono)", fontSize: 24, fontWeight: 700,
+                color: "var(--ink)", border: "1px solid var(--line-strong)", borderRadius: 6,
+                padding: "2px 8px", background: "var(--surface)" }} />
+          ) : (
+            <span
+              onClick={onOverrideNet ? () => { setDraft(String(Math.round(net))); setEditingNet(true); } : undefined}
+              title={onOverrideNet ? "Click to override the total" : undefined}
+              style={{ fontFamily: "var(--mono)", fontSize: 28, fontWeight: 700,
+                color: netOverridden ? "var(--ink)" : (net >= 0 ? "var(--green-deep)" : "var(--red-deep)"),
+                fontVariantNumeric: "tabular-nums", cursor: onOverrideNet ? "pointer" : "default",
+                borderBottom: netOverridden ? "1.5px dotted var(--muted-2)" : "none" }}>
+              {net < 0 ? "−" : ""}{fmtMoney(Math.abs(net))}
+            </span>
+          )}
+        </div>
+        {setNiceRounding && (
+          <label style={{
+            display: "inline-flex", alignItems: "center", gap: 6, marginTop: 10, alignSelf: "flex-end",
+            padding: "0 12px", fontFamily: "var(--mono)", fontSize: 11, color: "var(--muted)", cursor: "pointer",
+          }}>
+            <input type="checkbox" checked={!!niceRounding} onChange={e => setNiceRounding(e.target.checked)} />
+            Round numbers nicely
+          </label>
+        )}
+      </div>
+
+      {/* Over time — collapsed by default to keep the section calm. The
+          diverging stacked bars (per-item, hover-readable) carry the
+          running-total line; the dashed tail trends past the last bar to
+          imply the benefits keep coming. */}
+      <div style={{ marginTop: 18 }}>
+        <button type="button" onClick={() => setShowChart(s => !s)}
+          style={{
+            background: "none", border: "none", padding: "4px 12px", cursor: "pointer", width: "100%",
+            display: "flex", alignItems: "baseline", gap: 8, textAlign: "left",
+            fontFamily: "var(--serif)", fontSize: 14, color: "var(--muted)",
+          }}>
+          <span aria-hidden style={{ transition: "transform 160ms ease", transform: showChart ? "rotate(90deg)" : "none", color: "var(--line-strong)", fontSize: 11 }}>▸</span>
+          <span style={{ fontStyle: "italic" }}>Over time — benefits, costs &amp; the running total, by {u.one}</span>
+        </button>
+        {showChart && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ position: "relative" }}>
+              <div style={{ display: "flex", alignItems: "stretch" }}>
+                {Array.from({ length: horizon }).map((_, p) => (
+                  <div key={p} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", minWidth: 0 }}>
+                    <div style={{ height: H, width: "100%", display: "flex", flexDirection: "column-reverse", justifyContent: "flex-start", alignItems: "center", gap: 1 }}>
+                      {segStack(benefitItems, "benefit", p)}
+                    </div>
+                    <div style={{ height: 1, width: "100%", background: "var(--line-strong)" }} />
+                    <div style={{ height: H, width: "100%", display: "flex", flexDirection: "column", justifyContent: "flex-start", alignItems: "center", gap: 1 }}>
+                      {segStack(costItems, "cost", p)}
+                    </div>
+                    <div style={{ marginTop: 7, fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 12, color: "var(--muted)" }}>{u.one} {p + 1}</div>
+                  </div>
+                ))}
+              </div>
+              <svg width="100%" height={2 * H + 1} viewBox={`0 0 100 ${2 * H + 1}`} preserveAspectRatio="none"
+                style={{ position: "absolute", left: 0, right: 0, top: 0, pointerEvents: "none", overflow: "visible" }}>
+                <polyline points={linePts} fill="none" stroke="var(--ink)" strokeWidth="2"
+                  vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" opacity="0.72" />
+                <polyline points={extPts} fill="none" stroke="var(--ink)" strokeWidth="2"
+                  vectorEffect="non-scaling-stroke" strokeLinecap="round" strokeDasharray="2 3.5" opacity="0.4" />
+              </svg>
+              {/* Breakeven — only when the cash position actually dips below
+                  zero and recovers. Drawn as HTML (not SVG) so the dot stays a
+                  circle under the chart's non-uniform x-scale. Label floats at
+                  the top in the clear space above the bars. */}
+              {breakevenX != null && (
+                <div style={{ position: "absolute", left: `${breakevenX}%`, top: 0, height: 2 * H + 1, pointerEvents: "none", zIndex: 2 }}>
+                  <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, borderLeft: "1px dashed var(--ink)", opacity: 0.3 }} />
+                  <div style={{ position: "absolute", left: 0, top: H, width: 7, height: 7, borderRadius: "50%", background: "var(--ink)", transform: "translate(-50%, -50%)" }} />
+                  <div style={{ position: "absolute", left: 0, top: -1, transform: "translateX(-50%)",
+                    fontFamily: "var(--mono)", fontSize: 10, letterSpacing: "0.05em", textTransform: "uppercase",
+                    color: "var(--muted)", background: "var(--surface)", padding: "1px 5px", borderRadius: 4,
+                    border: "1px solid var(--line)", whiteSpace: "nowrap" }}>breakeven</div>
+                </div>
+              )}
+            </div>
+            {/* Just the line label — the per-item legend is gone; the bars are
+                hover-readable and the table carries the names. */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, paddingLeft: 2,
+              fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 12.5, color: "var(--muted)" }}>
+              <span aria-hidden style={{ width: 18, borderTop: "2px solid var(--ink)", opacity: 0.72, flex: "0 0 auto" }} />
+              Cash position by {u.one} {horizon} — {endCum < 0 ? "−" : "+"}{fmtMoney(Math.abs(endCum))}{_slope < 0 ? ", and climbing" : ""}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Proportion strip — costs vs benefits at a glance, split BY COMPONENT
+          (same magnitude shades + hover cross-highlight as the table and the
+          over-time chart). Sits below the chart, since the chart is the thing
+          linked to the table. Bonus bar underneath, same scale. */}
+      {(() => {
+        const scale = Math.abs(costsTotal) + Math.abs(benefitsTotal) || 1;
+        const segBar = (items, kind) => items.map((it, i) => {
+          const w = (Math.abs(it.total) / scale) * 100;
+          if (!(w > 0)) return null;
+          const isHov = hovered === it.id;
+          const dim = hovered != null && hovered !== it.id;
+          return (
+            <div key={it.id}
+              title={`${it.name}: ${kind === "cost" ? "−" : "+"}${fmtMoney(Math.abs(it.total))}`}
+              onMouseEnter={() => setHovered(it.id)} onMouseLeave={() => setHovered(null)}
+              style={{ width: `${w}%`, background: hueOf(kind),
+                opacity: dim ? 0.16 : (isHov ? 1 : ordOp(i)),
+                boxShadow: isHov ? "inset 0 0 0 1px var(--ink)" : "none",
+                cursor: "pointer", transition: "opacity 120ms ease" }} />
+          );
+        });
+        // Center (in %) of the hovered segment within the main bar, so a
+        // tooltip-style label can fade in directly beneath it. Ordered
+        // costs-then-benefits to match the bar's segment order; kind comes
+        // from position so the sign/colour are right even if items lack it.
+        const ordered = [...costItems, ...benefitItems];
+        let hoverItem = null, hoverCenter = 0, hoverKind = "benefit";
+        { let acc = 0;
+          for (let j = 0; j < ordered.length; j++) {
+            const it = ordered[j];
+            const w = (Math.abs(it.total) / scale) * 100;
+            if (it.id === hovered) { hoverItem = it; hoverCenter = acc + w / 2; hoverKind = j < costItems.length ? "cost" : "benefit"; break; }
+            acc += w;
+          } }
+        // Centre the label under the segment, but anchor it to the bar edge for
+        // the outermost segments so a long name never spills past the bar.
+        const labelAnchor = hoverCenter > 78 ? { right: 0, transform: "none" }
+          : hoverCenter < 22 ? { left: 0, transform: "none" }
+          : { left: `${hoverCenter}%`, transform: "translateX(-50%)" };
+        return (
+          <div style={{ marginTop: 24, padding: "0 2px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6,
+              fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.01em" }}>
+              <span style={{ color: "var(--red-deep)" }}>Costs −{fmtMoney(costsTotal)}</span>
+              <span style={{ color: "var(--green-deep)" }}>Direct benefits +{fmtMoney(benefitsTotal)}</span>
+            </div>
+            <div style={{ display: "flex", height: 16, borderRadius: 4, overflow: "hidden", background: "var(--surface-2)", gap: 1 }}>
+              {segBar(costItems, "cost")}
+              {segBar(benefitItems, "benefit")}
+            </div>
+            {/* Hover label — fades in under the hovered segment, tooltip-style,
+                so the reader doesn't need to scroll back to the table to see
+                which slice is which. Reserves its own height so the bonus bar
+                below sits a touch lower and never jumps when it appears. */}
+            <div style={{ position: "relative", height: 18, marginTop: 5 }}>
+              <div aria-hidden style={{
+                position: "absolute", top: 0, ...labelAnchor,
+                opacity: hoverItem ? 1 : 0, transition: "opacity 140ms ease", pointerEvents: "none",
+                whiteSpace: "nowrap", fontFamily: "var(--mono)", fontSize: 11, letterSpacing: "0.01em",
+                display: "flex", alignItems: "baseline", gap: 6 }}>
+                <span style={{ color: "var(--ink-2)" }}>{hoverItem ? hoverItem.name : ""}</span>
+                <span style={{ fontWeight: 600, color: hoverKind === "cost" ? "var(--red-deep)" : "var(--green-deep)" }}>
+                  {hoverItem ? (hoverKind === "cost" ? "−" : "+") + fmtMoney(Math.abs(hoverItem.total)) : ""}
+                </span>
+              </div>
+            </div>
+            {bonusItems.length > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 5 }}>
+                <div style={{ flex: 1, display: "flex", height: 10, borderRadius: 4, overflow: "hidden", background: "var(--surface-2)", gap: 1 }}>
+                  {segBar(bonusItems, "benefit")}
+                </div>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--muted)", whiteSpace: "nowrap" }}>Bonus +{fmtMoney(bonusTotal)}</span>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Bonus — adjacent (scope 2) + downstream (scope 3) benefits. Real
+          upside, but deliberately NOT in the headline total; collapsed by
+          default. Same green tint + click-to-edit + cross-highlight. */}
+      {bonusItems.length > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <button type="button" onClick={() => setShowBonus(s => !s)}
+            style={{
+              background: "none", border: "none", padding: "4px 12px", cursor: "pointer", width: "100%",
+              display: "flex", alignItems: "baseline", gap: 8, textAlign: "left",
+              fontFamily: "var(--serif)", fontSize: 14, color: "var(--muted)",
+            }}>
+            <span aria-hidden style={{ transition: "transform 160ms ease", transform: showBonus ? "rotate(90deg)" : "none", color: "var(--line-strong)", fontSize: 11 }}>▸</span>
+            <span style={{ fontStyle: "italic" }}>Bonus — adjacent &amp; downstream upside, not counted in the total</span>
+            <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 13, fontWeight: 600, color: "var(--green-deep)", opacity: 0.72, whiteSpace: "nowrap" }}>+{fmtMoney(bonusTotal)}</span>
+          </button>
+          {showBonus && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 6 }}>
+              {bonusItems.map((r, i) => itemRow(r, "benefit", i))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const MinimalLanding = (props) => {
   const {
     adjustedItems, model,
@@ -4980,11 +5317,23 @@ const MinimalLanding = (props) => {
     if (next.has(k)) next.delete(k); else next.add(k);
     return next;
   });
+  // Ephemeral edit mode for the And targets: once commitments are confirmed,
+  // the editable cards collapse to a compact value list (reclaiming vertical
+  // space, the way Now collapses to its resolved equation). "Edit" re-opens
+  // them; this is separate from commitmentsConfirmed so Then stays visible.
+  const [andEditing, setAndEditing] = React.useState(false);
 
   // Shared across Benefits and Costs so hovering a row in one section
   // overrides any locked-open row in the other (no duplicate marginalia).
   const [openItemId, setOpenItemId] = React.useState(null);
   const [hoveredItemId, setHoveredItemId] = React.useState(null);
+  // Which cell of the risk coverage grid (HAZOP matrix) the pointer is over.
+  // Holds { driverId, source, kind, riskId?, title?, impact?, note?, ... } so
+  // the detail panel under the grid can preview that risk. Null = not hovering.
+  const [riskCell, setRiskCell] = React.useState(null);
+  // The risk pinned by clicking a matrix cell — its full detail shows under the
+  // grid. Null falls back to the most material risk, so the panel is never empty.
+  const [selectedRiskId, setSelectedRiskId] = React.useState(null);
   // AND-section audit-trail visibility. Compact (commitment + name +
   // result per benefit) by default; expanded (multiplication chain
   // with confirmed factors) on demand. Per-session, not persisted —
@@ -5043,7 +5392,7 @@ const MinimalLanding = (props) => {
   // Items by scope. Legacy items without a recognised scope fall into 1.
   const allBenefits = adjustedItems.filter(it => it.kind === "benefit");
   // Drives the "stay crisp above the modal blur" exemptions.
-  const activeBenefit = allBenefits.find(b => b.id === openItemId) || null;
+  const activeBenefit = adjustedItems.find(b => b.id === openItemId) || null;
   const activeBenefitKind = activeBenefit?.benefitKind || null;
   const modalOpen = !!activeBenefit;
 
@@ -5813,6 +6162,10 @@ const MinimalLanding = (props) => {
               const showBenefitBreakdowns = (viewOnly || commitmentsConfirmed)
                 || commitmentConfirmedCount > 0;
 
+              // Once committed, collapse the editable target cards to a compact
+              // value list (author/desktop only) — "Edit" re-expands them.
+              const andCollapsed = commitmentsConfirmed && !andEditing && !viewOnly;
+
               return (
             <div style={{ ...rowStyle,
                           // Bigger pause after And before Then: this is
@@ -5822,31 +6175,85 @@ const MinimalLanding = (props) => {
                           animation: (viewOnly || commitmentsConfirmed) ? undefined : "fadeIn 360ms var(--ease-expo)" }}>
               <div style={opStyle(false)} aria-hidden>And</div>
               <p style={conditionProse}>we hit the following targets:</p>
-              <div style={{
-                display: "flex", flexDirection: "column", gap: 8,
-                margin: "14px 0 0",
-              }}>
-                {visibleCommits.map((a) => {
-                  const isConfirmed = !!(confirmedAssumptions && confirmedAssumptions[a.id]);
-                  return (
-                    <div key={a.id}>
-                      <CommitmentTargetRow
-                        a={a}
-                        value={(A && A[a.id] != null) ? A[a.id] : a.value}
-                        setAssumption={props.setAssumption}
-                        viewOnly={viewOnly}
-                        accentColor={isConfirmed || viewOnly || commitmentsConfirmed ? "var(--green-deep)" : "var(--muted)"}
-                        confirmable={!viewOnly && !commitmentsConfirmed}
-                        confirmed={isConfirmed}
-                        confirmLabel="Okay"
-                        onToggleConfirm={() =>
-                          markAssumptionConfirmed(a.id, !isConfirmed)
-                        }
-                      />
+              {andCollapsed ? (
+                /* Collapsed — a compact list of the committed values, the way
+                   Now collapses to its resolved equation. Reclaims the vertical
+                   space the editable cards took. */
+                <div style={{
+                  display: "flex", flexWrap: "wrap", alignItems: "center",
+                  columnGap: 22, rowGap: 10, margin: "16px 0 0",
+                }}>
+                  {visibleCommits.map((a) => (
+                    <span key={a.id} style={{
+                      display: "inline-flex", alignItems: "baseline", gap: 8,
+                      fontFamily: "var(--serif)", fontSize: 15, letterSpacing: "-0.005em",
+                    }}>
+                      <span style={{ color: "var(--muted)" }}>{a.label}</span>
+                      <span style={{
+                        fontFamily: "var(--mono)", fontSize: 14, fontWeight: 600,
+                        color: "var(--ink-2)", fontVariantNumeric: "tabular-nums",
+                      }}>{fmtValueWithUnit((A && A[a.id] != null) ? A[a.id] : a.value, a.unit)}</span>
+                    </span>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setAndEditing(true)}
+                    style={{
+                      background: "var(--surface)", border: "1px solid var(--line-strong)",
+                      padding: "5px 12px", borderRadius: 999, cursor: "pointer",
+                      fontFamily: "var(--sans)", fontSize: 12, fontWeight: 600,
+                      color: "var(--ink-2)", letterSpacing: "0.01em", whiteSpace: "nowrap",
+                    }}
+                    title="Re-open the target editors"
+                  >Edit</button>
+                </div>
+              ) : (
+                <>
+                  <div style={{
+                    display: "flex", flexDirection: "column", gap: 8,
+                    margin: "14px 0 0",
+                  }}>
+                    {visibleCommits.map((a) => {
+                      const isConfirmed = !!(confirmedAssumptions && confirmedAssumptions[a.id]);
+                      return (
+                        <div key={a.id}>
+                          <CommitmentTargetRow
+                            a={a}
+                            value={(A && A[a.id] != null) ? A[a.id] : a.value}
+                            setAssumption={props.setAssumption}
+                            viewOnly={viewOnly}
+                            accentColor={isConfirmed || viewOnly || commitmentsConfirmed ? "var(--green-deep)" : "var(--muted)"}
+                            confirmable={!viewOnly && !commitmentsConfirmed}
+                            confirmed={isConfirmed}
+                            confirmLabel="Okay"
+                            onToggleConfirm={() =>
+                              markAssumptionConfirmed(a.id, !isConfirmed)
+                            }
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {/* When re-editing after commitment, a quiet "Done" collapses
+                      the cards back to the compact list. */}
+                  {commitmentsConfirmed && andEditing && !viewOnly && (
+                    <div style={{ marginTop: 14 }}>
+                      <button
+                        type="button"
+                        onClick={() => setAndEditing(false)}
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: 7,
+                          background: "var(--green-deep)", color: "#FFFFFF", border: "none",
+                          padding: "8px 16px", borderRadius: 999, cursor: "pointer",
+                          fontFamily: "var(--sans)", fontSize: 12.5, fontWeight: 600,
+                          letterSpacing: "0.02em", whiteSpace: "nowrap",
+                        }}
+                        title="Collapse the targets back to the value list"
+                      >Done</button>
                     </div>
-                  );
-                })}
-              </div>
+                  )}
+                </>
+              )}
 
               {false && scope1Quant.length > 0 && (
                 // "which means, each year:" subtotals + math chains —
@@ -6345,168 +6752,46 @@ const MinimalLanding = (props) => {
           dashboard layout was the most mobile-hostile and app-shaped
           moment on the page; this stack reads top-to-bottom on phone
           and desktop alike. */}
+      {/* Unified outcome ledger — combined table (benefit rows tinted green,
+          cost rows red) + one diverging bar chart, replacing the separate
+          Benefits / Costs / proportion / net blocks. Direct (scope-1) only;
+          bonus/adjacent benefits handled separately (none here). */}
       <div data-landing-row="benefits" style={{ paddingTop: 26, scrollMarginTop: 80 }}>
-        <BenefitsListing
-          items={allBenefits}
-          model={model}
-          assumptions={assumptions}
-          A={A}
-          setAssumption={props.setAssumption}
-          viewOnly={viewOnly}
-          horizon={horizon}
-          levelOverrides={levelOverrides}
-          setLevelOverride={setLevelOverride}
-          showBonus={showBonus}
-          setShowBonus={setShowBonus}
-          grandTotalLabel={`Total over ${timelineLabel(horizon, GRANULARITY)}`}
-          grandTotalValue={`${npvDisp < 0 ? "−" : ""}${fmtMoney(Math.abs(npvDisp), { exact: true })}`}
-          grandTotalAccent={npvDisp >= 0 ? "var(--green-deep)" : "var(--red-deep)"}
-        />
-      </div>
-
-      {/* Costs — same compact summary + stacked over-time chart. */}
-      <div data-landing-row="costs" style={{ paddingTop: 28, marginTop: 28, scrollMarginTop: 80 }}>
-        <ScopeView
-          items={costs}
-          model={model}
-          horizon={horizon}
-          title="Costs"
-          totalPV={costsDisp}
-          totalAccent="var(--red-deep)"
-          accent="var(--red-deep)"
-          valuePrefix="−"
-          viewOnly={viewOnly}
-        />
-      </div>
-      {false && (
-        <LandingRow
-          isStatic
-          dataKey="costs"
-          label="Costs"
-          headlineSize={32}
-          valueSize={32}
-          value={costsDisp}
-          valuePrefix="−"
-          accent="var(--red-deep)"
-        >
-        <CostsBreakdown
-          costs={costs} model={model} A={A} assumptions={props.assumptions}
-          setAssumption={props.setAssumption}
-          horizon={horizon} viewOnly={viewOnly} isMobile={isMobile}
-          costSeries={costSeries} costYMax={costYMax}
-          selectedItemId={selectedItemId} onSelectItem={onSelectItem}
-          onAddItem={onAddItem}
-          submitToClaudeCode={props.submitToClaudeCode}
-          openId={openItemId} setOpenId={setOpenItemId}
-          hoveredId={hoveredItemId} setHoveredId={setHoveredItemId}
-        />
-        </LandingRow>
-      )}
-
-      <ProportionStrip
-        costsValue={costsDisp}
-        directValue={benefitsTotalDisp}
-        bonusValue={bonusDisp}
-        onJump={jumpToSection}
-      />
-      <NetBenefitRow
-        npv={npvDisp}
-        costsPV={costsDisp}
-        bonusPV={bonusDisp}
-        paybackPeriod={props.paybackData && props.paybackData.paybackPeriod}
-        elevated={modalOpen}
-        showCostsHint={!costsRowVisible}
-        horizon={horizon}
-        niceRounding={niceRounding}
-        setNiceRounding={setNiceRounding}
-      />
-
-      {/* CASHFLOW PANEL — answers the cash-tight customer's first two
-          questions: how deep does this dig me before I see it back, and
-          when does the line cross zero? Italic-serif prose names the
-          three values (max out-of-pocket / payback year / ending
-          position); the single-line chart confirms the shape. Same
-          editorial register as the Risks lead-in below. */}
-      {(() => {
-        const pb = props.paybackData;
-        if (!pb || !pb.cumulative || pb.cumulative.length === 0) return null;
-        const hasMotion = pb.periodly.some(v => Math.abs(v) >= 0.5)
-          || pb.cumulative.some(v => Math.abs(v) >= 0.5);
-        if (!hasMotion) return null;
-
-        const troughAbs = Math.abs(pb.trough.value);
-        const endingAbs = Math.abs(pb.endingValue);
-        const paysBackInHorizon = pb.paybackPeriod != null && pb.paybackPeriod > 0;
-        const startsPositive = pb.paybackPeriod === 0;
-        // Granularity-aware payback labels.
-        const u = periodUnit(GRANULARITY);
-        const paybackPositionLabel = paysBackInHorizon
-          ? `${u.one} ${Math.max(1, Math.ceil(pb.paybackPeriod))}`
-          : null;
-        const endLabel   = `${u.one} ${horizon}`;
-        const startLabel = `${u.one} 1`;
-
-        const ValBad  = ({ children }) => (
-          <strong style={{ fontStyle: "normal", fontWeight: 500, color: "var(--red-deep)" }}>{children}</strong>
-        );
-        const ValGood = ({ children }) => (
-          <strong style={{ fontStyle: "normal", fontWeight: 500, color: "var(--green-deep)" }}>{children}</strong>
-        );
-        const ValInk = ({ children }) => (
-          <strong style={{ fontStyle: "normal", fontWeight: 500, color: "var(--ink)" }}>{children}</strong>
-        );
-
-        let prose;
-        if (startsPositive) {
-          prose = (
-            <>This case pays from {startLabel} — no upfront outlay to absorb. By the end of {endLabel} you're <ValGood>+{fmtMoney(endingAbs, { exact: true })}</ValGood> ahead.</>
-          );
-        } else if (paysBackInHorizon && pb.endingValue >= 0) {
-          prose = (
-            <>You'd be up to <ValBad>−{fmtMoney(troughAbs, { exact: true })}</ValBad> out of pocket before any of it comes back. You're square in <ValInk>{paybackPositionLabel}</ValInk>, and <ValGood>+{fmtMoney(endingAbs, { exact: true })}</ValGood> ahead by the end of {endLabel}.</>
-          );
-        } else if (paysBackInHorizon && pb.endingValue < 0) {
-          prose = (
-            <>You'd be up to <ValBad>−{fmtMoney(troughAbs, { exact: true })}</ValBad> out of pocket. You're briefly square in <ValInk>{paybackPositionLabel}</ValInk>, but later costs put you <ValBad>−{fmtMoney(endingAbs, { exact: true })}</ValBad> under again by the end of {endLabel}.</>
-          );
-        } else {
-          prose = (
-            <>You'd be up to <ValBad>−{fmtMoney(troughAbs, { exact: true })}</ValBad> out of pocket. By the end of {endLabel} you'd still be <ValBad>−{fmtMoney(endingAbs, { exact: true })}</ValBad> under — this case doesn't pay back within the horizon you set.</>
-          );
-        }
-
-        return (
-          <div style={{
-            marginTop: isMobile ? 32 : 56,
-            opacity: modalOpen ? 0.25 : 1,
-            filter: modalOpen ? "blur(3px)" : "none",
-            transition: "opacity 360ms ease, filter 360ms ease",
-            pointerEvents: modalOpen ? "none" : "auto",
-          }}>
-            <div style={{
-              fontSize: 11, color: "var(--muted-2)", letterSpacing: "0.1em",
-              textTransform: "uppercase", fontWeight: 500,
-              marginBottom: 14,
-            }}>Cashflow over time</div>
-            <p style={{
-              fontFamily: "var(--serif)", fontStyle: "italic",
-              fontSize: 19, lineHeight: 1.55, color: "var(--ink-2)",
-              margin: "0 0 24px", letterSpacing: "-0.005em",
-            }}>
-              {prose}
-            </p>
-            <CumulativeCashflow
-              periodly={pb.periodly}
-              cumulative={pb.cumulative}
-              paybackPeriod={pb.paybackPeriod}
-              trough={pb.trough}
-              endingValue={pb.endingValue}
+        {(() => {
+          const directBenefits = allBenefits.filter(b => (([1, 2, 3].includes(b.scope) ? b.scope : 1) === 1));
+          const mkItem = (it) => ({ id: it.id, name: it.name, total: __effItem(it),
+            series: (model.perItem[it.id] && model.perItem[it.id].series) || [] });
+          const benefitItems = directBenefits.map(mkItem).sort((a, b) => b.total - a.total);
+          const costItems = costs.map(mkItem).sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+          const bonusBenefits = allBenefits.filter(b => { const sc = [1, 2, 3].includes(b.scope) ? b.scope : 1; return sc === 2 || sc === 3; });
+          const bonusItems = bonusBenefits.map(mkItem).sort((a, b) => b.total - a.total);
+          const bonusTotal = bonusItems.reduce((s, it) => s + it.total, 0);
+          const netOv = levelOverrides && levelOverrides.total && levelOverrides.total.net;
+          const displayedNet = (typeof netOv === "number" && Number.isFinite(netOv)) ? netOv : npvDisp;
+          return (
+            <OutcomeLedger
+              benefitItems={benefitItems}
+              costItems={costItems}
+              bonusItems={bonusItems}
+              bonusTotal={bonusTotal}
               horizon={horizon}
               granularity={GRANULARITY}
+              benefitsTotal={benefitsTotalDisp}
+              costsTotal={costsDisp}
+              net={displayedNet}
+              netOverridden={typeof netOv === "number"}
+              onOverrideNet={(v) => setLevelOverride("total", "net", v)}
+              onClearNet={() => setLevelOverride("total", "net", null)}
+              onSelectItem={(id) => setOpenItemId(id)}
+              niceRounding={niceRounding}
+              setNiceRounding={setNiceRounding}
             />
-          </div>
-        );
-      })()}
+          );
+        })()}
+      </div>
+
+      {/* The cashflow trajectory (running total) is now drawn as a line over
+          the Then bar chart above — no separate cashflow panel. */}
 
       {/* BUT — honest risk disclosure. Same operator-in-margin pattern as
           IF / AND / THEN. Risks are split into two locus-grouped
@@ -6546,8 +6831,6 @@ const MinimalLanding = (props) => {
         const risks = rm ? rm.relevant : allRisks.filter(r => r.threatens);
         if (risks.length === 0) return null;
 
-        const commitmentRisks = risks.filter(r => r.locus === "commitment");
-        const worldRisks = risks.filter(r => r.locus !== "commitment");
         // Author/buyer axis: index.html (no __readOnly) → author; view.html
         // (__readOnly:true) → buyer. Badges + the coverage prompt are author-only.
         const authorMode = (typeof window !== "undefined") && !window.READ_ONLY;
@@ -6578,85 +6861,248 @@ const MinimalLanding = (props) => {
           margin: 0, letterSpacing: "-0.005em",
         };
 
-        // Subsection labels: previously rendered as 26px marginalia in
-        // the same style as Now/And/Then/Risks, but they're not pillars
-        // of the proof — they're inline subheads of the Risks section.
-        // The marginalia treatment forced an awkward two-line break
-        // ("Under our / control") and competed with the four real
-        // operators. Now: inline subheads above each group, no line
-        // break, no margin glyph.
-        const subsectionLabelStyle = {
-          fontFamily: "var(--serif)",
-          fontSize: 18, fontWeight: 500, fontStyle: "italic",
-          color: "var(--muted)",
-          letterSpacing: "-0.005em",
-          marginBottom: 14,
-          lineHeight: 1.3,
+        // The one human-rated dimension (1–5), surfaced as "Plausibility": it
+        // rates the credibility of the downside SCENARIO, not the quality of
+        // the base assumption — so disclosing it reads as diligence, not doubt.
+        // (The data field is still `likelihood`; only the display term changes.)
+        const PLAUSIBILITY_WORD = { 1: "Remote", 2: "Unlikely", 3: "Plausible", 4: "Probable", 5: "Near-certain" };
+        // The expand is a 3-beat justification card: Stake / Likelihood /
+        // Suggestion. Labels in the page's small-caps-mono register; bodies in
+        // serif, so it reads as a quiet captioned aside, not a form.
+        const cardLabelStyle = {
+          fontFamily: "var(--mono)", fontSize: 10, letterSpacing: "0.06em",
+          textTransform: "uppercase", color: "var(--muted-2)", paddingTop: 3,
+        };
+        const cardBodyStyle = {
+          fontFamily: "var(--serif)", fontSize: 14, lineHeight: 1.55,
+          color: "var(--muted)", letterSpacing: "-0.005em",
         };
 
-        const SRC_COLOR = { intervention: "#8C7BB0", execution: "#C0884A", environment: "#6E8CA8" };
-        const SRC_LABEL = { intervention: "Intervention", execution: "Execution", environment: "Environment" };
-        const renderRisk = (r, idx) => {
-          const key = `${r.locus}:${r.threatens || idx}:${idx}`;
+        // Each risk collapses to one calm line — claim on the left, a single
+        // muted "value at risk" figure on the right — and expands on click to
+        // the full quantified impact + the mitigation. Reuses the page's
+        // open/toggle disclosure (same as "show the math"). The only colour in
+        // the default view is a red ▲ on the few critical rows, so the eye
+        // lands on what matters instead of being pulled in six directions.
+        // Detail panel for a single risk — its title, the quantified Stake, the
+        // Plausibility rating, and the Suggestion (what we'd do). Shown under the
+        // matrix for whichever risk is hovered or selected; the matrix is the only
+        // list now, so this panel is where a risk's full story lives.
+        const renderRiskDetail = (r) => {
+          if (!r) return null;
+          const d = r.downside;
+          const fmtV = (v, u) => fmtValueWithUnit(u === "%" ? Math.round(v * 10) / 10 : Math.round(v), u);
           return (
-            <div key={key} style={{
-              display: "grid",
-              gridTemplateColumns: "30px 1fr",
-              columnGap: 14,
-              alignItems: "start",
-              paddingBottom: 14,
-              borderBottom: "1px solid var(--line)",
-            }}>
-              <div style={{
-                fontFamily: "var(--serif)",
-                fontSize: 19, fontWeight: 500,
-                color: "var(--muted)",
-                lineHeight: 1.35,
-                textAlign: "right",
-                paddingTop: 1,
-                fontVariantNumeric: "tabular-nums",
-              }}>
-                {idx + 1}
-              </div>
-              <div style={{ minWidth: 0 }}>
-                <div style={{
-                  fontFamily: "var(--serif)", fontWeight: 500,
-                  fontSize: 17, color: "var(--ink)",
-                  letterSpacing: "-0.005em", lineHeight: 1.3,
-                }}>
-                  {r.title}
-                </div>
-                {/* Author view only — the recipient sees the title alone. A
-                    quiet editorial gloss (not a mono tag row): the source dot
-                    matches the /mine fingerprint, the threatened target ties
-                    the risk back to the model. Category is omitted — it tracks
-                    the source 1:1 by default, so it read as redundant noise. */}
-                {authorMode && (
-                  <div style={{
-                    display: "flex", alignItems: "baseline", flexWrap: "wrap",
-                    gap: 6, marginTop: 5,
-                    fontFamily: "var(--serif)", fontStyle: "italic",
-                    fontSize: 14, lineHeight: 1.4, color: "var(--muted)",
-                    letterSpacing: "-0.005em",
-                  }} title="Author view only — the recipient sees the title alone.">
-                    <span style={{
-                      width: 7, height: 7, borderRadius: "50%", flex: "0 0 auto",
-                      alignSelf: "center",
-                      background: SRC_COLOR[r.source] || "var(--line-strong)",
-                    }} aria-hidden />
-                    <span>{SRC_LABEL[r.source] || r.source}</span>
-                    {r.impactLabel && (
-                      <span>— threatens <span style={{ color: "var(--ink-2)" }}>{r.impactLabel}</span></span>
-                    )}
-                    {r.critical && (
-                      <span style={{
-                        fontFamily: "var(--mono)", fontStyle: "normal",
-                        fontSize: 10.5, letterSpacing: "0.04em", textTransform: "uppercase",
-                        color: "var(--red-deep)", fontWeight: 600, marginLeft: 2,
-                      }}>▲ critical</span>
-                    )}
-                  </div>
+            <div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                <span style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 17,
+                  lineHeight: 1.3, color: "var(--ink)", letterSpacing: "-0.005em" }}>{r.title}</span>
+                {r.critical && (
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 9.5, letterSpacing: "0.06em",
+                    textTransform: "uppercase", color: "var(--red-deep)", fontWeight: 600 }}>▲ Critical</span>
                 )}
+                {d && (
+                  <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 14,
+                    color: "var(--ink-2)", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>−{fmtMoney(d.impact)}</span>
+                )}
+              </div>
+              <div style={{ maxWidth: 660 }}>
+                <div style={{
+                  display: "grid", gridTemplateColumns: "84px 1fr",
+                  columnGap: 16, rowGap: 10, alignItems: "baseline",
+                }}>
+                  {/* Stake — the move and its consequence. Same sensitivity that
+                      drives the tornado, so the matrix figure and this sentence
+                      can never disagree. Worded by locus: a commitment is a target
+                      we set (risk = we miss it); a world variable is an estimate. */}
+                  {d && (
+                    <>
+                      <div style={cardLabelStyle}>Stake</div>
+                      <div style={cardBodyStyle}>
+                        {r.locus === "commitment" ? "If we miss our " : "If our "}
+                        <span style={{ fontStyle: "italic" }}>{d.variable}</span>
+                        {r.locus === "commitment" ? " target (" : " estimate is off ("}
+                        {fmtV(d.fromValue, d.unit)} → {fmtV(d.toValue, d.unit)}),{" "}
+                        we {d.kind === "overspend" ? "overspend" : "lose"} {fmtMoney(d.impact)} over {timelineLabel(horizon, GRANULARITY)}.
+                      </div>
+                    </>
+                  )}
+
+                  {r.likelihood != null && (
+                    <>
+                      <div style={cardLabelStyle}>Plausibility</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 9 }}
+                        aria-label={`Plausibility ${r.likelihood} of 5`}>
+                        <span aria-hidden style={{ whiteSpace: "nowrap", lineHeight: 1 }}>
+                          {[1, 2, 3, 4, 5].map(i => (
+                            <span key={i} style={{
+                              fontSize: 8.5, marginRight: 3,
+                              color: i <= r.likelihood ? "var(--ink-2)" : "var(--line-strong)",
+                            }}>●</span>
+                          ))}
+                        </span>
+                        <span style={{
+                          fontFamily: "var(--serif)", fontStyle: "italic",
+                          fontSize: 13.5, color: "var(--muted)",
+                        }}>{PLAUSIBILITY_WORD[r.likelihood] || ""}</span>
+                      </div>
+                    </>
+                  )}
+
+                  {r.mitigation && (
+                    <>
+                      <div style={cardLabelStyle}>Suggestion</div>
+                      <div style={cardBodyStyle}>{r.mitigation}</div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        };
+
+        // ── Coverage grid (the HAZOP sweep, drawn) ───────────────────────
+        // Rows = every load-bearing driver behind the headline; columns =
+        // the three directions a failure can come from. A cell is WARM when
+        // the sweep found a risk there (heat = value-at-risk), CALM when it
+        // was checked and cleared. The fully-filled grid is the point: it
+        // shows we interrogated every driver from every direction, not just
+        // the handful that surfaced. Hovering a cell reveals what was found.
+        const SOURCES = [
+          { id: "intervention", label: "Strategy" },
+          { id: "execution",    label: "Execution" },
+          { id: "environment",  label: "Environment" },
+        ];
+        const assumById = {}; assumptions.forEach(a => { assumById[a.id] = a; });
+        // Consciously-cleared drivers (noMaterialRisk) + their one-line reason.
+        const clearedNotes = {};
+        allRisks.forEach(r => { if (r && r.noMaterialRisk && r.threatens) clearedNotes[r.threatens] = r.note || ""; });
+        // Driver set (rows): every threatened driver, every load-bearing
+        // scope-1 driver, every cleared driver — de-duped, in insertion order.
+        const seenDriver = new Set(); const driverIds = [];
+        const pushDriver = (id) => { if (id && !seenDriver.has(id)) { seenDriver.add(id); driverIds.push(id); } };
+        risks.forEach(r => pushDriver(r.threatens));
+        ((rm && rm.coverage && rm.coverage.loadBearing) || []).forEach(d => pushDriver(d.id));
+        Object.keys(clearedNotes).forEach(pushDriver);
+        const riskAt = {};
+        risks.forEach(r => { if (r.threatens && r.source) riskAt[`${r.threatens}|${r.source}`] = r; });
+        const sensRange = {}; ((rm && rm.sensitivity) || []).forEach(s => { sensRange[s.id] = s.range; });
+        const maxImpact = Math.max(1, ...risks.map(r => (r.downside ? r.downside.impact : 0)));
+        const gridRows = driverIds.map(id => {
+          const cleared = Object.prototype.hasOwnProperty.call(clearedNotes, id);
+          const cells = SOURCES.map(src => {
+            const rk = riskAt[`${id}|${src.id}`];
+            if (rk) return { state: "risk", risk: rk, impact: rk.downside ? rk.downside.impact : 0 };
+            return { state: cleared ? "cleared" : "checked", impact: 0 };
+          });
+          const exposure = Math.max(0, sensRange[id] || 0, ...cells.map(c => c.impact || 0));
+          const hasRisk = cells.some(c => c.state === "risk");
+          // Responsibility (locus): a commitment driver is ours to manage; a world
+          // fact is outside our control. Same derivation the list grouping uses.
+          const locus = (assumById[id] && assumById[id].controllable === true) ? "commitment" : "world";
+          return { id, label: (assumById[id] && assumById[id].label) || id, cleared, hasRisk, cells, exposure, locus };
+        }).sort((a, b) => (b.hasRisk - a.hasRisk) || (b.exposure - a.exposure));
+        const heatPct = (impact) => 22 + 40 * Math.min(1, (impact || 0) / maxImpact);   // gentle 22–62%
+        // Two readable states only: warm red = a risk was found here (heat scaled
+        // by value-at-risk), faint green = swept & clear. Critical risk cells
+        // override to a solid red with a label (handled in the cell renderer).
+        // Merging the old "checked" grey and "cleared" green drops the confusing
+        // third tone — now a fully-green row just reads as a cleared driver.
+        const cellBg = (c) => c.state === "risk"
+          ? `color-mix(in srgb, var(--red-deep) ${heatPct(c.impact).toFixed(1)}%, transparent)`
+          : "color-mix(in srgb, var(--green-deep) 11%, transparent)";
+
+        // Risk lookup + the default selection (most material risk) so the detail
+        // panel under the matrix always has something to show before any click.
+        const riskById = {}; risks.forEach(r => { if (r.id) riskById[r.id] = r; });
+        const topRiskId = (risks.slice().sort((a, b) => ((b.downside ? b.downside.impact : 0) - (a.downside ? a.downside.impact : 0)))[0] || {}).id || null;
+
+        const renderCoverageGrid = () => {
+          if (gridRows.length === 0) return null;
+          const labelColW = collapseMarginalia ? 116 : 150;
+          const d = riskCell;
+          // The selected (pinned) risk gets the ring; the panel shows whatever is
+          // hovered, else the selected, else the most material risk by default.
+          const effectiveSelected = selectedRiskId || topRiskId;
+          const focusRiskId = (d && d.riskId) || effectiveSelected;
+          return (
+            <div style={{ marginBottom: 34 }}>
+              <div style={{ fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 13.5,
+                color: "var(--muted)", letterSpacing: "-0.005em", marginBottom: 13, lineHeight: 1.5 }}>
+                Every driver behind the headline, swept for failure from each direction — hover or click a cell to see the risk and what we'd do about it.
+              </div>
+              {(() => {
+                // Split the rows by responsibility (locus): the same division the
+                // list uses, brought onto the matrix as two labelled row-groups so
+                // you can see at a glance which drivers are ours to manage.
+                const grpUnder   = gridRows.filter(r => r.locus === "commitment");
+                const grpOutside = gridRows.filter(r => r.locus !== "commitment");
+                const rowLabelStyle = (row) => ({ fontFamily: "var(--serif)", fontSize: 13.5,
+                  color: row.cleared ? "var(--muted)" : "var(--ink-2)", letterSpacing: "-0.005em",
+                  display: "flex", alignItems: "center", justifyContent: "flex-end",
+                  textAlign: "right", paddingRight: 6, lineHeight: 1.2 });
+                const cellEl = (row, c, ci) => {
+                  const src = SOURCES[ci];
+                  const hot = d && d.driverId === row.id && d.source === src.id;
+                  const isRisk = c.state === "risk" && !!c.risk;
+                  const crit = isRisk && !!c.risk.critical;
+                  const sel = isRisk && c.risk.id === effectiveSelected;
+                  return (
+                    <div key={`${row.id}:${src.id}`}
+                      title={isRisk ? undefined : (row.cleared ? `Checked & cleared${clearedNotes[row.id] ? ": " + clearedNotes[row.id] : ""}` : "Swept — no material risk from this direction")}
+                      onMouseEnter={() => setRiskCell({
+                        driverId: row.id, driverLabel: row.label, source: src.id, sourceLabel: src.label,
+                        kind: c.state, riskId: c.risk ? c.risk.id : null, title: c.risk ? c.risk.title : null,
+                        impact: c.risk && c.risk.downside ? c.risk.downside.impact : null,
+                        critical: crit, note: row.cleared ? clearedNotes[row.id] : null,
+                      })}
+                      onMouseLeave={() => setRiskCell(null)}
+                      onClick={isRisk ? () => setSelectedRiskId(c.risk.id) : undefined}
+                      style={{ height: 30, borderRadius: 4,
+                        background: crit ? "var(--red-deep)" : cellBg(c),
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        border: hot ? "1.5px solid var(--ink)" : (sel ? "1.5px solid var(--ink-2)" : "1.5px solid transparent"),
+                        transform: hot ? "translateY(-1px)" : "none",
+                        boxShadow: hot ? "0 3px 9px rgba(0,0,0,0.11)" : "none",
+                        transition: "transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease",
+                        cursor: isRisk ? "pointer" : "default" }}>
+                      {crit && (
+                        <span aria-hidden style={{ fontFamily: "var(--mono)", fontSize: 9, fontWeight: 600,
+                          letterSpacing: "0.12em", textTransform: "uppercase", color: "#fff" }}>critical</span>
+                      )}
+                    </div>
+                  );
+                };
+                const groupBlock = (title, rows) => rows.length === 0 ? null : (
+                  <React.Fragment key={title}>
+                    <div style={{ gridColumn: "1 / -1", fontFamily: "var(--serif)", fontStyle: "italic",
+                      fontSize: 12.5, color: "var(--muted-2)", letterSpacing: "-0.005em",
+                      marginTop: 12, marginBottom: 1, paddingLeft: 2 }}>{title}</div>
+                    {rows.map(row => (
+                      <React.Fragment key={row.id}>
+                        <div style={rowLabelStyle(row)}>{row.label}</div>
+                        {row.cells.map((c, ci) => cellEl(row, c, ci))}
+                      </React.Fragment>
+                    ))}
+                  </React.Fragment>
+                );
+                return (
+                  <div style={{ display: "grid", gridTemplateColumns: `${labelColW}px repeat(3, 1fr)`,
+                    columnGap: 5, rowGap: 5 }}>
+                    <div />
+                    {SOURCES.map(src => (
+                      <div key={src.id} style={{ fontFamily: "var(--mono)", fontSize: 10, letterSpacing: "0.05em",
+                        textTransform: "uppercase", color: "var(--muted-2)", textAlign: "center", paddingBottom: 3 }}>{src.label}</div>
+                    ))}
+                    {groupBlock("Under our control", grpUnder)}
+                    {groupBlock("Outside our control", grpOutside)}
+                  </div>
+                );
+              })()}
+              {/* Detail panel — the selected risk's full story (or the one being
+                  previewed on hover). Min-height reserved so it never jumps. */}
+              <div style={{ marginTop: 22, paddingTop: 18, borderTop: "1px solid var(--line)", minHeight: 132 }}>
+                {renderRiskDetail(riskById[focusRiskId])}
               </div>
             </div>
           );
@@ -6673,30 +7119,49 @@ const MinimalLanding = (props) => {
             transition: "opacity 360ms ease, filter 360ms ease",
             pointerEvents: modalOpen ? "none" : "auto",
           }}>
-            <div style={{ position: "relative", marginBottom: 28 }}>
+            <div style={{ position: "relative", marginBottom: 24 }}>
               <div style={butOpStyle} aria-hidden>Risks</div>
               <p style={butConditionProse}>
                 …but here's what could go wrong:
               </p>
             </div>
 
-            {commitmentRisks.length > 0 && (
-              <div style={{ marginBottom: 36 }}>
-                <div style={subsectionLabelStyle}>Things under our control</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-                  {commitmentRisks.map((r, idx) => renderRisk(r, idx))}
-                </div>
-              </div>
-            )}
+            {renderCoverageGrid()}
 
-            {worldRisks.length > 0 && (
-              <div>
-                <div style={subsectionLabelStyle}>Things outside our control</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-                  {worldRisks.map((r, idx) => renderRisk(r, commitmentRisks.length + idx))}
+            {/* Read-everything fallback — the matrix is for triage, but it's
+                hard to scan every risk at once, so this collapsed disclosure
+                lays them all out in full, most material first. Hidden by
+                default; reuses the page's open/toggle disclosure. */}
+            {(() => {
+              const allKey = "risks:all";
+              const allOpen = open.has(allKey);
+              const ordered = risks.slice().sort((a, b) =>
+                ((b.downside ? b.downside.impact : 0) - (a.downside ? a.downside.impact : 0)));
+              if (ordered.length === 0) return null;
+              return (
+                <div style={{ marginTop: 30, borderTop: "1px solid var(--line)", paddingTop: 4 }}>
+                  <button type="button" onClick={() => toggle(allKey)}
+                    style={{
+                      background: "none", border: "none", padding: "9px 0", cursor: "pointer", width: "100%",
+                      display: "flex", alignItems: "baseline", gap: 9, textAlign: "left",
+                      fontFamily: "var(--serif)", fontSize: 14, color: "var(--muted)",
+                    }}>
+                    <span aria-hidden style={{ transition: "transform 160ms ease", transform: allOpen ? "rotate(90deg)" : "none", color: "var(--line-strong)", fontSize: 11 }}>▸</span>
+                    <span style={{ fontStyle: "italic" }}>All {ordered.length} identified risks, in full</span>
+                  </button>
+                  {allOpen && (
+                    <div style={{ marginTop: 10 }}>
+                      {ordered.map((r, i) => (
+                        <div key={r.id} style={{ marginTop: i > 0 ? 22 : 6, paddingTop: i > 0 ? 22 : 0,
+                          borderTop: i > 0 ? "1px solid var(--line)" : "none" }}>
+                          {renderRiskDetail(r)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
         );
       })()}
@@ -6705,7 +7170,7 @@ const MinimalLanding = (props) => {
       )}
 
       <EstimateModal
-        item={allBenefits.find(b => b.id === openItemId) || null}
+        item={adjustedItems.find(b => b.id === openItemId) || null}
         model={model} A={A} assumptions={assumptions}
         setAssumption={props.setAssumption}
         viewOnly={viewOnly} horizon={horizon}

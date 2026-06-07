@@ -506,6 +506,37 @@ function computeRiskModel(items, assumptions, A, risks, opts) {
   const lineValue = denom ? denom * materialFraction : peakScope1 * 0.10;
   const isLoadBearing = (id) => (rangeById[id] || 0) > 0 && (rangeById[id] || 0) >= lineValue;
 
+  // Per-assumption one-sided DOWNSIDE for the risk impact line: when the
+  // threatened assumption swings to its adverse (sceptical) end, how far does it
+  // move, and how much net value do we shed? "lose" when the hit is a benefit
+  // shortfall, "overspend" when it's a cost overrun. Anchored on the SAME
+  // sensitivity the tornado uses, so a risk's stated impact can never disagree
+  // with the sensitivity chart.
+  const sensById = {}; sens.forEach(s => { sensById[s.id] = s; });
+  const riskDownside = (aid) => {
+    const s = aid ? sensById[aid] : null;
+    const a = aid ? assumptionById[aid] : null;
+    if (!s || !a || typeof a.value !== "number") return null;
+    const adverseIsLo = s.lo <= s.hi;                 // lower net == worse case
+    const adverseNet  = adverseIsLo ? s.lo : s.hi;
+    const adverseMul  = adverseIsLo ? s.loMul : s.hiMul;
+    if (!Number.isFinite(adverseMul)) return null;
+    const impact = s.base - adverseNet;               // net value shed
+    if (!(impact > 0)) return null;
+    const fromValue = a.value;
+    const toValue   = a.value * adverseMul;
+    const mAdv = computeModel(items, { ...A, [aid]: toValue });
+    const benefitLost = m.totalBenefits - mAdv.totalBenefits;
+    const costAdded   = mAdv.totalCosts - m.totalCosts;
+    return {
+      id: aid, variable: a.label || aid, unit: a.unit || "",
+      fromValue, toValue,
+      direction: toValue < fromValue ? "down" : "up",
+      kind: costAdded > benefitLost ? "overspend" : "lose",
+      impact,
+    };
+  };
+
   // 3) Per-risk normalize + score. Phantoms (noMaterialRisk) never render/count.
   const all  = (Array.isArray(risks) ? risks : []).map((r, i) => normalizeRisk(r, i, assumptionById));
   const real = all.filter(r => !r.noMaterialRisk);
@@ -517,7 +548,8 @@ function computeRiskModel(items, assumptions, A, risks, opts) {
     const plausible   = r.likelihood != null && r.likelihood >= critLikelihood;
     const critical    = relevant && aboveLine && plausible;
     return { ...r, relevant, materiality, materialityPct: denom ? materiality / denom : null,
-      aboveLine, assessed, critical, impactLabel: labelById[r.threatens] || r.threatens || null };
+      aboveLine, assessed, critical, impactLabel: labelById[r.threatens] || r.threatens || null,
+      downside: riskDownside(r.threatens) };
   });
 
   // 4) Exposure — Σ value-at-risk by source, each threatened assumption once.
