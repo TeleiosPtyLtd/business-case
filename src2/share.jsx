@@ -9,6 +9,10 @@
 
 const SHARE_ENDPOINT = (typeof window !== "undefined" && window.CBAGENT_SHARE_ENDPOINT)
   || "/api/share";
+// Auto-register endpoint (private portfolio drafts). Defaults to the share
+// endpoint's sibling so a custom CBAGENT_SHARE_ENDPOINT carries it along.
+const PRIVATE_ENDPOINT = (typeof window !== "undefined" && window.CBAGENT_PRIVATE_ENDPOINT)
+  || SHARE_ENDPOINT.replace(/\/api\/share\/?$/, "/api/private");
 const AUTH_URL = (typeof window !== "undefined" && window.CBAGENT_AUTH_URL)
   || "https://auth.teleios.au";
 
@@ -113,19 +117,28 @@ const useTeleiosSession = () => {
     if (!cur) return null; // never signed in → caller shares anonymously
     const s = await popupSignIn(); writeSession(s); setSession(s); return s.token;
   }, []);
+  // Silent token: returns a usable token ONLY if it can be obtained without a
+  // popup (cached-and-fresh). Null otherwise — never opens a window. This is
+  // what auto-register uses on page load, where a popup would be blocked.
+  const getTokenSilentPopup = React.useCallback(async () => {
+    const cur = readSession();
+    return (cur && Date.now() - cur.ts < TOKEN_FRESH_MS) ? cur.token : null;
+  }, []);
 
   if (nativeClerk) {
     const u = nativeClerk.user;
+    const nativeToken = async () => {
+      try { return nativeClerk.session ? await nativeClerk.session.getToken() : null; }
+      catch { return null; }
+    };
     return {
       user: u
         ? { email: (u.primaryEmailAddress && u.primaryEmailAddress.emailAddress) || u.username || null, userId: u.id }
         : null,
       signIn:  async () => { if (nativeClerk.openSignIn) nativeClerk.openSignIn({}); },
       signOut: () => { try { nativeClerk.signOut(); } catch {} },
-      getFreshToken: async () => {
-        try { return nativeClerk.session ? await nativeClerk.session.getToken() : null; }
-        catch { return null; }
-      },
+      getFreshToken: nativeToken,
+      getTokenSilent: nativeToken,   // native Clerk getToken() is already silent
     };
   }
   return {
@@ -133,7 +146,32 @@ const useTeleiosSession = () => {
     signIn:  signInPopup,
     signOut: signOutPopup,
     getFreshToken: getFreshPopup,
+    getTokenSilent: getTokenSilentPopup,
   };
+};
+
+// Auto-register the current case to the signed-in author's portfolio as a
+// PRIVATE draft. Silent and side-effect-light: given a token (obtained without
+// a popup by the caller) it POSTs the snapshot to /api/private, which upserts
+// by (owner, caseKey) — so re-running is idempotent on the server. Records the
+// result in a localStorage marker so the Share modal can open in "saved" mode.
+// Returns the server record on success, or null if it couldn't (no token, no
+// caseKey, server refused). NEVER throws; NEVER opens a popup.
+const autoRegisterCase = async ({ snapshot, token, caseKey }) => {
+  if (!token || !caseKey || !snapshot) return null;
+  try {
+    const res = await fetch(PRIVATE_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+      body: JSON.stringify({ caseKey, snapshot }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const rec = { id: data.id, url: data.url, editUrl: data.editUrl,
+      visibility: data.visibility, ownerToken: data.ownerToken, caseKey };
+    try { localStorage.setItem(`cbagent.autoreg.${caseKey}`, JSON.stringify({ id: rec.id, at: Date.now() })); } catch {}
+    return rec;
+  } catch { return null; }
 };
 
 const __relativeTime = (iso) => {
@@ -806,25 +844,39 @@ const buildSnapshot = ({ items, assumptionsEff, overrides }) => {
   // Without this the recipient sees no Now-section equation and the
   // "Let's proceed" button falls back to its standalone placement.
   baseline: (window.PROJECT_CONFIG && window.PROJECT_CONFIG.baseline) || [],
-  // Snapshot carries the LEAN risk shape only. The Risk Event Card body
-  // (outcomes/signposts/owner/likelihood) stays author-side in project.config.js
-  // and never crosses the wire — keeps the buyer view title-only by construction
-  // (no viewer-flag gating, which CLAUDE.md forbids). source/category/guideword
-  // DO ship (the fingerprint + author-mode badges need them).
+  // Snapshot carries the risk copy the recipient now sees in the matrix-first
+  // Risks section: title, the quantified Stake (read live from sensitivity),
+  // Plausibility (likelihood), and the Suggestion (`mitigation`) shown in the
+  // master-detail panel — PLUS the cleared-coverage entries (`noMaterialRisk` +
+  // `note`) that draw the green matrix rows and their hover reason. The deep
+  // Risk Event Card body (outcomes/signposts/owner/likelihoodPrior) stays
+  // author-side and is still stripped. Two shapes ride the wire: a real risk
+  // has a title; a cleared entry has threatens + noMaterialRisk + an optional
+  // one-line note and NO title (it renders only as a swept-clear coverage cell).
   risks: (Array.isArray(window.PROJECT_CONFIG && window.PROJECT_CONFIG.risks) ? window.PROJECT_CONFIG.risks : [])
-    .filter(r => r && r.title && r.threatens && r.noMaterialRisk !== true)
-    .map(r => ({
-      title: r.title, threatens: r.threatens, locus: r.locus, source: r.source,
-      category: r.category, guideword: r.guideword,
-      // `likelihood` (the 1–5 rating) persists so assessed/critical survive a
-      // re-save and round-trip into the editor. It's a bare number, not shown
-      // on the title-only buyer page — outcomes/signposts/owner/likelihoodPrior
-      // remain author-side (stripped).
-      ...(typeof r.likelihood === "number" ? { likelihood: r.likelihood } : {}),
-      ...(Array.isArray(r.threatensAlso) && r.threatensAlso.length ? { threatensAlso: r.threatensAlso } : {}),
-    })),
+    .filter(r => r && r.threatens && (r.title || r.noMaterialRisk === true))
+    .map(r => {
+      if (r.noMaterialRisk === true) {
+        return {
+          threatens: r.threatens, noMaterialRisk: true,
+          ...(typeof r.note === "string" && r.note ? { note: r.note } : {}),
+        };
+      }
+      return {
+        title: r.title, threatens: r.threatens, locus: r.locus, source: r.source,
+        category: r.category, guideword: r.guideword,
+        // The Suggestion / control shown in the detail panel — the recipient is
+        // meant to see controls + coverage, so it now crosses the wire.
+        ...(typeof r.mitigation === "string" && r.mitigation ? { mitigation: r.mitigation } : {}),
+        // `likelihood` (the 1–5 rating) persists so assessed/critical survive a
+        // re-save and round-trip into the editor. outcomes/signposts/owner/
+        // likelihoodPrior remain author-side (stripped).
+        ...(typeof r.likelihood === "number" ? { likelihood: r.likelihood } : {}),
+        ...(Array.isArray(r.threatensAlso) && r.threatensAlso.length ? { threatensAlso: r.threatensAlso } : {}),
+      };
+    }),
   overrides,
   };
 };
 
-Object.assign(window, { ShareModal, buildSnapshot, useTeleiosSession });
+Object.assign(window, { ShareModal, buildSnapshot, useTeleiosSession, autoRegisterCase });

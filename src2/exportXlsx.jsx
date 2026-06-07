@@ -772,7 +772,7 @@ function buildCoverSheet({
   const howTo = [
     ["Edit values in blue.",       "Only the Value column on the Assumptions sheet accepts edits. Every other number is a formula."],
     ["Watch the model recompute.", "All sheets update automatically when you change an input."],
-    ["See Cashflow for the math.", "Each line item's per-year cashflow is a formula referencing the named assumptions."],
+    ["See Cashflow for the math.", `Each line item's per-${periodUnit(GRANULARITY).one} cashflow is a formula referencing the named assumptions.`],
     ["Read formulas as English.",  "Assumption IDs are registered as Excel named ranges, so a formula reads = setup_hrs * loaded_rate rather than = Assumptions!C15 * C19."],
   ];
   for (const [head, body] of howTo) {

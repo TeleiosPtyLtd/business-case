@@ -451,6 +451,33 @@ const App = () => {
     }
   }, [adjustedItems, assumptionsEff, overrides, session]);
 
+  // Auto-register to the author's portfolio (/mine) as a PRIVATE draft the
+  // moment a signed-in author's freshly-built case loads — no Share click
+  // needed, no public link. Author studio only; silent (never opens a popup —
+  // a stale token waits for the ⋯-menu "save to portfolio" gesture instead);
+  // fires once when a signed-in session + a usable token exist and the case
+  // isn't already a server record. The server upserts by (owner, caseKey), so
+  // re-runs and reloads don't spawn duplicate /mine rows. Not signed in, or no
+  // meta.caseKey → silent no-op. Deps are PRIMITIVES (userId, share id) so this
+  // fires on sign-in / first registration, never on every slider drag.
+  React.useEffect(() => {
+    if (EDIT_MODE || READ_ONLY) return;                 // author studio only
+    if (!session.user) return;                          // not signed in → no-op
+    if (share && share.id) return;                      // already a server record
+    const caseKey = PROJECT_META && PROJECT_META.caseKey;
+    if (!caseKey) return;                               // no stable key → disabled
+    let cancelled = false;
+    (async () => {
+      const token = await session.getTokenSilent();     // never opens a popup
+      if (cancelled || !token) return;                  // stale/none → wait for a gesture
+      const snap = buildSnapshot({ items: adjustedItems, assumptionsEff, overrides });
+      const rec = await window.autoRegisterCase({ snapshot: snap, token, caseKey });
+      if (!cancelled && rec && rec.id) setShare(rec);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.user && session.user.userId, share && share.id]);
+
   return (
     <>
     <div className="no-print page-shell" style={{ minHeight: "100vh" }}>
@@ -2506,8 +2533,12 @@ const AssumptionRow = ({ a, value, setAssumption, disabled }) => {
   const hi = Math.max(baseHi, Number.isFinite(value) ? value : baseHi);
   const step = Number.isFinite(a.step) && a.step > 0 ? a.step : 1;
   const snap = (n) => Math.round(n / step) * step;
-  const hardLo = ["%", "$", "$/yr", "$/hr", "hrs", "/yr", "/mo"].includes((a.unit || "").trim())
-    ? 0 : (((a.unit || "").trim() === "pp") ? -100 : -Infinity);
+  // Money, money-rate, hours and % can't go negative; the only signed unit is
+  // "pp". Detect rates by the "/" suffix so EVERY granularity (/d /wk /mo /qtr
+  // /yr, and $/wk, hrs/wk…) floors at 0, not just the two that were enumerated.
+  const __uLo = (a.unit || "").trim();
+  const hardLo = (__uLo === "%" || __uLo === "hrs" || __uLo.startsWith("$") || __uLo.includes("/"))
+    ? 0 : (__uLo === "pp" ? -100 : -Infinity);
   const hardHi = ((a.unit || "").trim() === "%") ? 100
     : ((a.unit || "").trim() === "pp") ? 100
     : Infinity;
@@ -4480,9 +4511,10 @@ const TargetValueEditor = ({ a, value, onChange, disabled }) => {
     const u = (a.unit || "").trim();
     if (u === "%")        return { lo: 0,   hi: 100 };
     if (u === "pp")       return { lo: -100, hi: 100 };
-    if (u === "hrs")      return { lo: 0,   hi: Infinity };
-    if (u === "$"  || u === "$/yr" || u === "$/hr") return { lo: 0, hi: Infinity };
-    if (u === "/yr" || u === "/mo") return { lo: 0, hi: Infinity };
+    // Money, money-rate, hours and any per-period rate ("/wk", "/qtr", "$/wk",
+    // "hrs/wk"…) floor at 0 across EVERY granularity — detect the "/" suffix
+    // rather than enumerating /yr and /mo only.
+    if (u === "hrs" || u.startsWith("$") || u.includes("/")) return { lo: 0, hi: Infinity };
     return { lo: -Infinity, hi: Infinity };
   }, [a.unit]);
   const softBounds = React.useMemo(() => {
