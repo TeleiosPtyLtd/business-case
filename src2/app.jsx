@@ -197,14 +197,13 @@ const App = () => {
   const [estimatesOpen, setEstimatesOpen] = React.useState(false); // mobile collapsible
   const [resetOpen, setResetOpen] = React.useState(false);
   const [exportMenuOpen, setExportMenuOpen] = React.useState(false);
-  // Mobile gets a flat view-only presentation (no editing affordances,
-  // all rows revealed at once) — the proof walkthrough doesn't fit the
-  // narrow viewport. A shared snapshot stays fully interactive: the
-  // recipient steps through Now / And / Then / Risks just as the author
-  // did, and can override estimates locally for what-if exploration.
-  // READ_ONLY only suppresses Share / Sign in and re-keys persistence
-  // per share id; it does NOT lock the model.
-  const viewOnly = isMobile;
+  // Mobile keeps its flat, all-revealed presentation (the narrow viewport
+  // collapses the proof walkthrough), but is now EDITABLE like desktop: a
+  // reviewer on the run can confirm AND adjust estimates, not just read them.
+  // Saving stays gated separately (owner token / signed-in author); viewOnly
+  // only governs the local editing affordances, and READ_ONLY only suppresses
+  // Share / Sign in and re-keys persistence — neither locks the model.
+  const viewOnly = false;
 
   // Merge defaults + custom assumptions. customAssumptions may shadow
   // a default by id (to edit metadata of an existing assumption);
@@ -7128,8 +7127,8 @@ const MinimalLanding = (props) => {
                         transition: "transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease",
                         cursor: isRisk ? "pointer" : "default" }}>
                       {crit && (
-                        <span aria-hidden style={{ fontFamily: "var(--mono)", fontSize: 9, fontWeight: 600,
-                          letterSpacing: "0.12em", textTransform: "uppercase", color: "#fff" }}>critical</span>
+                        <span aria-hidden style={{ fontFamily: "var(--mono)", fontSize: collapseMarginalia ? 12 : 9, fontWeight: 700,
+                          letterSpacing: collapseMarginalia ? "0" : "0.12em", textTransform: "uppercase", color: "#fff" }}>{collapseMarginalia ? "▲" : "critical"}</span>
                       )}
                     </div>
                   );
